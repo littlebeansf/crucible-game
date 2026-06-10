@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<meta name="theme-color" content="#0b0e14" />
+<title>CRUCIBLE — Discover. Craft. Simulate.</title>
+<meta name="description" content="Discover thousands of elements, then drop them into a living physics sandbox. A craft-and-simulate game built entirely in SVG." />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cpath d='M50 8 C58 30 78 34 70 58 C66 72 58 84 50 90 C42 84 34 72 30 58 C24 40 40 40 40 26 C46 34 48 22 50 8Z' fill='%23ff8a1e'/%3E%3C/svg%3E" />
+<link rel="stylesheet" href="./src/style.css" />
+</head>
+<body>
+  <div id="loading"><div class="spinner"></div><div class="load-txt">Heating the Crucible…</div></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <svg viewBox="0 0 100 100" width="30" height="30" aria-hidden="true">
+        <defs><radialGradient id="lg" cx="50%" cy="62%" r="62%"><stop offset="0" stop-color="#fff2a8"/><stop offset=".5" stop-color="#ff8a1e"/><stop offset="1" stop-color="#d72200"/></radialGradient></defs>
+        <path d="M28 86 q22 8 44 0 l-6 -22 H34Z" fill="#6a7180"/>
+        <path d="M50 14 C56 32 72 36 66 56 C62 68 56 76 50 80 C44 76 38 68 34 56 C28 40 44 40 44 28 C48 36 48 24 50 14Z" fill="url(#lg)"/>
+      </svg>
+      <span class="brand-name">CRUCIBLE</span>
+    </div>
+
+    <nav class="tabs">
+      <button class="tab active" data-mode="forge">⚗️ Forge</button>
+      <button class="tab" data-mode="sandbox">🧪 Sandbox</button>
+    </nav>
+
+    <div class="stats">
+      <div class="stat"><b id="stat-discovered">4</b><span>found</span></div>
+      <div class="stat"><b id="stat-pct">0%</b><span id="stat-total-wrap">of <i id="stat-total">0</i></span></div>
+      <button id="reset-btn" class="icon-btn" title="Reset progress">↺</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- WORKSPACE -->
+    <section class="workspace">
+      <!-- FORGE -->
+      <div id="forge-view" class="view">
+        <div class="board-tools">
+          <button id="hint-btn" class="tool-btn">💡 Hint</button>
+          <button id="clear-board" class="tool-btn">🧹 Clear</button>
+          <span class="hint-text">Drag two elements together to combine. Double-click to remove.</span>
+        </div>
+        <div id="board" class="board">
+          <div class="board-hint">Drag elements here ↓</div>
+        </div>
+      </div>
+
+      <!-- SANDBOX -->
+      <div id="sandbox-view" class="view hidden">
+        <div class="board-tools">
+          <button id="sb-pause" class="tool-btn">⏸ Pause</button>
+          <button id="sb-clear" class="tool-btn">🧹 Clear</button>
+          <button id="sb-eraser" class="tool-btn">🧽 Eraser</button>
+          <label class="brush-ctl">Brush <input id="sb-brush" type="range" min="1" max="10" value="3" /></label>
+          <span id="sb-current" class="sb-current"><span class="sb-cur-ic">🏖️</span> Sand</span>
+        </div>
+        <div class="sb-wrap">
+          <canvas id="sandbox-canvas"></canvas>
+        </div>
+        <div id="sb-quick" class="sb-quick"></div>
+      </div>
+    </section>
+
+    <!-- DRAWER -->
+    <aside id="drawer" class="drawer">
+      <div class="drawer-head">
+        <input id="search" type="search" placeholder="Search elements…" autocomplete="off" />
+        <div class="drawer-sub">
+          <span><b id="drawer-count">0</b> items</span>
+          <div class="sorts">
+            <button class="sort-btn active" data-sort="recent">Recent</button>
+            <button class="sort-btn" data-sort="az">A–Z</button>
+            <button class="sort-btn" data-sort="tier">Tier</button>
+            <button id="phys-filter" class="sort-btn" title="Show only sandbox-usable materials">⚛︎ Phys</button>
+          </div>
+        </div>
+      </div>
+      <div id="drawer-items" class="drawer-items"></div>
+    </aside>
+  </main>
+
+  <!-- floating discovery card -->
+  <div id="discover-card" class="discover-card">
+    <div class="dc-ic"></div>
+    <div class="dc-meta"><div class="dc-tag">NEW DISCOVERY</div><div class="dc-name"></div><div class="dc-sub"></div></div>
+  </div>
+  <div id="toast" class="toast"></div>
+
+  <button id="drawer-toggle" class="drawer-toggle" aria-label="Toggle elements">🧰</button>
+
+  <!-- first-run welcome -->
+  <div id="welcome" class="welcome hidden">
+    <div class="welcome-card">
+      <div class="welcome-logo">
+        <svg viewBox="0 0 100 100" width="54" height="54" aria-hidden="true">
+          <defs><radialGradient id="wg" cx="50%" cy="62%" r="62%"><stop offset="0" stop-color="#fff2a8"/><stop offset=".5" stop-color="#ff8a1e"/><stop offset="1" stop-color="#d72200"/></radialGradient></defs>
+          <path d="M50 14 C56 32 72 36 66 56 C62 68 56 76 50 80 C44 76 38 68 34 56 C28 40 44 40 44 28 C48 36 48 24 50 14Z" fill="url(#wg)"/>
+        </svg>
+      </div>
+      <h1>CRUCIBLE</h1>
+      <p class="welcome-tag">Discover · Craft · Simulate</p>
+      <div class="welcome-steps">
+        <div class="wstep"><b>⚗️ Forge</b><span>Drag two elements together to discover new ones. ~6,000 to find.</span></div>
+        <div class="wstep"><b>🧪 Sandbox</b><span>Everything physical becomes a material. Drop it in and watch real physics — sand, water, fire, lava, gas, explosions.</span></div>
+      </div>
+      <button id="welcome-start" class="welcome-btn">Light the fire →</button>
+    </div>
+  </div>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
