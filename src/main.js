@@ -7,6 +7,7 @@
 import { GameState } from "./state.js";
 import { Sandbox } from "./sandbox/engine.js";
 import { svgString, pixelColor } from "./icons.js";
+import { storage } from "./storage.js";
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -373,12 +374,12 @@ function setupTopbar() {
   });
 }
 function maybeShowWelcome() {
-  const seen = localStorage.getItem("crucible_welcomed");
+  const seen = storage.get("crucible_welcomed");
   const w = $("#welcome");
   if (!seen) w.classList.remove("hidden");
   $("#welcome-start").addEventListener("click", () => {
     w.classList.add("closing");
-    localStorage.setItem("crucible_welcomed", "1");
+    storage.set("crucible_welcomed", "1");
     setTimeout(() => w.classList.add("hidden"), 360);
   });
 }

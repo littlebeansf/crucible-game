@@ -2,6 +2,8 @@
    CRUCIBLE — Game State (discovery, save/load, recipe lookup)
 ============================================================================ */
 
+import { storage } from "./storage.js";
+
 const SAVE_KEY = "crucible_save_v1";
 const BASE_DISCOVERED = ["water", "fire", "earth", "air"];
 
@@ -22,7 +24,7 @@ export class GameState {
 
   load() {
     let saved = null;
-    try { saved = JSON.parse(localStorage.getItem(SAVE_KEY) || "null"); } catch {}
+    try { saved = JSON.parse(storage.get(SAVE_KEY) || "null"); } catch {}
     const ids = (saved && Array.isArray(saved.discovered)) ? saved.discovered : BASE_DISCOVERED;
     this.discovered = new Set(ids.filter(id => this.elements[id]));
     for (const b of BASE_DISCOVERED) this.discovered.add(b);
@@ -30,13 +32,11 @@ export class GameState {
   }
 
   save() {
-    try {
-      localStorage.setItem(SAVE_KEY, JSON.stringify({
-        discovered: [...this.discovered],
-        recent: this.recentlyDiscovered.slice(0, 200),
-        ts: Date.now(),
-      }));
-    } catch {}
+    storage.set(SAVE_KEY, JSON.stringify({
+      discovered: [...this.discovered],
+      recent: this.recentlyDiscovered.slice(0, 200),
+      ts: Date.now(),
+    }));
   }
 
   reset() {
