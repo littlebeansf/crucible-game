@@ -51,6 +51,13 @@ export class GameState {
 
   key(a, b) { return [a, b].sort().join("|"); }
 
+  // does a recipe exist for this pair? returns { result, isNew } | null (no side effects)
+  canCombine(a, b) {
+    const result = this.recipes[this.key(a, b)];
+    if (!result) return null;
+    return { result, isNew: !this.discovered.has(result) };
+  }
+
   // attempt to combine -> returns { result, isNew } | null
   combine(a, b) {
     const k = this.key(a, b);

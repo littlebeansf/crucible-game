@@ -177,6 +177,7 @@ function setupForge() {
     const r = board.getBoundingClientRect();
     spawnOnBoard(id, e.clientX - r.left, e.clientY - r.top);
   });
+  board.addEventListener("contextmenu", e => e.preventDefault()); // no native menu on the board
   $("#clear-board").addEventListener("click", clearForge);
   $("#hint-btn").addEventListener("click", showHint);
 }
@@ -204,9 +205,10 @@ function spawnOnBoard(id, x, y) {
 
 function makeDraggable(rec) {
   const node = rec.node;
-  let startX, startY, ox, oy, dragging = false;
+  let startX, startY, ox, oy, dragging = false, moved = false;
   node.addEventListener("pointerdown", e => {
-    dragging = true; node.setPointerCapture(e.pointerId);
+    if (e.button === 2) return; // right-click handled by contextmenu (delete)
+    dragging = true; moved = false; node.setPointerCapture(e.pointerId);
     node.classList.add("dragging");
     startX = e.clientX; startY = e.clientY; ox = rec.x; oy = rec.y;
   });
@@ -214,15 +216,26 @@ function makeDraggable(rec) {
     if (!dragging) return;
     rec.x = ox + (e.clientX - startX);
     rec.y = oy + (e.clientY - startY);
+    if (Math.abs(e.clientX - startX) > 3 || Math.abs(e.clientY - startY) > 3) moved = true;
     node.style.left = rec.x + "px"; node.style.top = rec.y + "px";
-    highlightOverlap(rec);
+    updateConnections(rec);
   });
   node.addEventListener("pointerup", e => {
     if (!dragging) return;
     dragging = false; node.classList.remove("dragging");
-    tryCombineAt(rec);
+    clearConnections();
+    if (moved) tryCombineAt(rec);
   });
-  node.addEventListener("dblclick", () => removeItem(rec)); // quick delete
+  // double-click to DUPLICATE (spawn a copy just beside this one)
+  node.addEventListener("dblclick", e => {
+    e.preventDefault();
+    spawnOnBoard(rec.id, rec.x + 36 + 28, rec.y + 36 + 28);
+  });
+  // right-click to DELETE
+  node.addEventListener("contextmenu", e => {
+    e.preventDefault();
+    removeItem(rec, true);
+  });
 }
 
 // Items are 72px wide; rec.x/rec.y is the top-left, so centers are +36.
@@ -233,26 +246,51 @@ function itemDistance(a, b) {
   const A = itemCenter(a), B = itemCenter(b);
   return Math.hypot(A.cx - B.cx, A.cy - B.cy);
 }
-// Find the NEAREST other item within snap range (not just the first found).
-function nearestPartner(rec) {
+// Find the NEAREST other item within snap range that forms a VALID recipe.
+// Falls back to nearest item of any kind so a near-miss still snaps (and shakes).
+function nearestPartner(rec, validOnly = false) {
   let best = null, bestD = SNAP_RADIUS;
   for (const other of boardItems) {
     if (other.uid === rec.uid) continue;
+    if (validOnly && !state.canCombine(rec.id, other.id)) continue;
     const d = itemDistance(rec, other);
     if (d < bestD) { bestD = d; best = other; }
   }
   return best;
 }
-function highlightOverlap(rec) {
-  const partner = nearestPartner(rec);
+
+/* --- animated dotted connection lines --- */
+const SVGNS = "http://www.w3.org/2000/svg";
+let linkSvg = null;
+function clearConnections() {
+  if (linkSvg) linkSvg.innerHTML = "";
+  for (const it of boardItems) it.node.classList.remove("target", "compatible");
+}
+// While dragging `rec`, draw a dotted line to every item it can actually
+// combine with, and mark the nearest in-range valid partner as the active target.
+function updateConnections(rec) {
+  if (!linkSvg) linkSvg = $("#board-links");
+  linkSvg.innerHTML = "";
+  const A = itemCenter(rec);
+  const target = nearestPartner(rec, true);
   for (const other of boardItems) {
     if (other.uid === rec.uid) continue;
-    other.node.classList.toggle("target", other === partner);
+    const hit = state.canCombine(rec.id, other.id);
+    other.node.classList.toggle("compatible", !!hit);
+    other.node.classList.toggle("target", other === target);
+    if (!hit) continue;
+    const B = itemCenter(other);
+    const line = document.createElementNS(SVGNS, "line");
+    line.setAttribute("x1", A.cx); line.setAttribute("y1", A.cy);
+    line.setAttribute("x2", B.cx); line.setAttribute("y2", B.cy);
+    line.setAttribute("class", "link" + (other === target ? " active" : ""));
+    linkSvg.appendChild(line);
   }
 }
+
 function tryCombineAt(rec) {
-  const partner = nearestPartner(rec);
-  $$(".bitem.target", board).forEach(n => n.classList.remove("target"));
+  const partner = nearestPartner(rec, true) || nearestPartner(rec, false);
+  $$(".bitem.target, .bitem.compatible", board).forEach(n => n.classList.remove("target", "compatible"));
   if (!partner) return;
   const cx = (rec.x + partner.x) / 2 + ITEM_HALF, cy = (rec.y + partner.y) / 2 + ITEM_HALF;
   const out = state.combine(rec.id, partner.id);
@@ -277,13 +315,19 @@ function tryCombineAt(rec) {
   }
 }
 
-function removeItem(rec) {
+function removeItem(rec, withFx = false) {
   const i = boardItems.findIndex(x => x.uid === rec.uid);
   if (i >= 0) boardItems.splice(i, 1);
-  rec.node.remove();
+  if (withFx) {
+    puff(rec.x + ITEM_HALF, rec.y + ITEM_HALF, "\uD83D\uDCA8");
+    rec.node.animate([{ transform: "scale(1)", opacity: 1 }, { transform: "scale(.3)", opacity: 0 }],
+      { duration: 160, easing: "ease-in" }).onfinish = () => rec.node.remove();
+  } else {
+    rec.node.remove();
+  }
   if (!boardItems.length) board.classList.remove("has-items");
 }
-function clearForge() { boardItems.forEach(r => r.node.remove()); boardItems = []; board.classList.remove("has-items"); }
+function clearForge() { boardItems.forEach(r => r.node.remove()); boardItems = []; clearConnections(); board.classList.remove("has-items"); }
 
 function flash(x, y, isNew) {
   const f = document.createElement("div");
