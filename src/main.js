@@ -82,14 +82,56 @@ function setupDrawer() {
   });
 }
 
+// Category display metadata: label, emoji badge, and a stable ordering.
+const CATEGORY_META = {
+  liquid:    { label: "Liquids",     emoji: "\uD83D\uDCA7", order: 1 },
+  gas:       { label: "Gases",       emoji: "\uD83D\uDCA8", order: 2 },
+  energy:    { label: "Energy",      emoji: "\u26A1",       order: 3 },
+  powder:    { label: "Powders",     emoji: "\uD83C\uDFD6\uFE0F", order: 4 },
+  solid:     { label: "Solids",      emoji: "\uD83E\uDEA8", order: 5 },
+  life:      { label: "Life",        emoji: "\uD83C\uDF31", order: 6 },
+  food:      { label: "Food",        emoji: "\uD83C\uDF5E", order: 7 },
+  structure: { label: "Structures",  emoji: "\uD83C\uDFDB\uFE0F", order: 8 },
+  machine:   { label: "Machines",    emoji: "\u2699\uFE0F", order: 9 },
+  tool:      { label: "Tools",       emoji: "\uD83D\uDD27", order: 10 },
+  object:    { label: "Objects",     emoji: "\uD83D\uDCE6", order: 11 },
+  cosmic:    { label: "Cosmic",      emoji: "\uD83C\uDF0C", order: 12 },
+  concept:   { label: "Concepts",    emoji: "\u2728",       order: 13 },
+  matter:    { label: "Matter",      emoji: "\uD83D\uDD36", order: 14 },
+};
+function catMeta(cat) { return CATEGORY_META[cat] || { label: cat, emoji: "\uD83D\uDD2E", order: 99 }; }
+
 function renderDrawer() {
   const list = state.discoveredList({ query: drawerQuery, sort: drawerSort, physOnly: drawerPhysOnly });
   const wrap = $("#drawer-items");
   wrap.innerHTML = "";
+  wrap.classList.toggle("grouped", drawerSort === "category");
   const frag = document.createDocumentFragment();
-  for (const el of list) {
-    frag.appendChild(makeChip(el, true));
+
+  if (drawerSort === "category") {
+    // group by category, ordered, then alpha within each group
+    const groups = new Map();
+    for (const el of list) {
+      if (!groups.has(el.category)) groups.set(el.category, []);
+      groups.get(el.category).push(el);
+    }
+    const ordered = [...groups.entries()].sort((a, b) => catMeta(a[0]).order - catMeta(b[0]).order);
+    for (const [cat, els] of ordered) {
+      els.sort((x, y) => x.name.localeCompare(y.name));
+      const m = catMeta(cat);
+      const header = document.createElement("div");
+      header.className = "cat-header cat-" + cat;
+      header.innerHTML = `<span class="cat-badge">${m.emoji}</span><span class="cat-label">${m.label}</span><span class="cat-num">${els.length}</span>`;
+      frag.appendChild(header);
+      const grid = document.createElement("div");
+      grid.className = "cat-grid";
+      for (const el of els) grid.appendChild(makeChip(el, true));
+      frag.appendChild(grid);
+    }
+  } else {
+    for (const el of list) frag.appendChild(makeChip(el, true));
   }
+
   wrap.appendChild(frag);
   $("#drawer-count").textContent = list.length;
 }
@@ -183,31 +225,51 @@ function makeDraggable(rec) {
   node.addEventListener("dblclick", () => removeItem(rec)); // quick delete
 }
 
-function itemsOverlap(a, b) {
-  const dx = (a.x) - (b.x), dy = (a.y) - (b.y);
-  return Math.hypot(dx, dy) < 56;
+// Items are 72px wide; rec.x/rec.y is the top-left, so centers are +36.
+const ITEM_HALF = 36;
+const SNAP_RADIUS = 84;   // generous: items connect well before fully overlapping
+function itemCenter(r) { return { cx: r.x + ITEM_HALF, cy: r.y + ITEM_HALF }; }
+function itemDistance(a, b) {
+  const A = itemCenter(a), B = itemCenter(b);
+  return Math.hypot(A.cx - B.cx, A.cy - B.cy);
 }
-function highlightOverlap(rec) {
+// Find the NEAREST other item within snap range (not just the first found).
+function nearestPartner(rec) {
+  let best = null, bestD = SNAP_RADIUS;
   for (const other of boardItems) {
     if (other.uid === rec.uid) continue;
-    other.node.classList.toggle("target", itemsOverlap(rec, other));
+    const d = itemDistance(rec, other);
+    if (d < bestD) { bestD = d; best = other; }
+  }
+  return best;
+}
+function highlightOverlap(rec) {
+  const partner = nearestPartner(rec);
+  for (const other of boardItems) {
+    if (other.uid === rec.uid) continue;
+    other.node.classList.toggle("target", other === partner);
   }
 }
 function tryCombineAt(rec) {
-  let partner = null;
-  for (const other of boardItems) {
-    if (other.uid === rec.uid) continue;
-    if (itemsOverlap(rec, other)) { partner = other; break; }
-  }
+  const partner = nearestPartner(rec);
   $$(".bitem.target", board).forEach(n => n.classList.remove("target"));
   if (!partner) return;
+  const cx = (rec.x + partner.x) / 2 + ITEM_HALF, cy = (rec.y + partner.y) / 2 + ITEM_HALF;
   const out = state.combine(rec.id, partner.id);
-  const cx = (rec.x + partner.x) / 2 + 36, cy = (rec.y + partner.y) / 2 + 36;
   if (out) {
-    // success: remove both, spawn result with a flash
-    flash(cx, cy, out.isNew);
-    removeItem(rec); removeItem(partner);
-    spawnOnBoard(out.result, cx, cy);
+    // success: glide the dragged item into its partner for satisfying feedback,
+    // then remove both and spawn the result with a flash.
+    const targetX = partner.x, targetY = partner.y;
+    const anim = rec.node.animate(
+      [{ transform: "translate(0,0)" },
+       { transform: `translate(${targetX - rec.x}px, ${targetY - rec.y}px) scale(.6)`, opacity: .4 }],
+      { duration: 130, easing: "cubic-bezier(.4,0,.2,1)", fill: "forwards" }
+    );
+    anim.onfinish = () => {
+      flash(cx, cy, out.isNew);
+      removeItem(rec); removeItem(partner);
+      spawnOnBoard(out.result, cx, cy);
+    };
   } else {
     // no recipe: little shake
     rec.node.animate([{ transform: "translateX(0)" }, { transform: "translateX(-6px)" }, { transform: "translateX(6px)" }, { transform: "translateX(0)" }], { duration: 220 });
@@ -287,10 +349,36 @@ function setupSandbox() {
     const px = (e.clientX - r.left), py = (e.clientY - r.top);
     sandbox.paint(px, py, sandbox.currentTool);
   };
+  // Hover tooltip: shows which element sits under the cursor.
+  const tip = $("#sb-tooltip");
+  let tipId = null;
+  const updateTip = e => {
+    const r = canvas.getBoundingClientRect();
+    const px = e.clientX - r.left, py = e.clientY - r.top;
+    const id = sandbox.idAtPixel(px, py);
+    if (!id) {
+      if (tipId !== null) { tip.classList.remove("show"); tipId = null; }
+      return;
+    }
+    if (id !== tipId) {
+      const el = DB.elements[id];
+      tip.innerHTML = el
+        ? `<span class="tt-ic">${emojiFor(el)}</span><span class="tt-name">${el.name}</span>`
+        : id;
+      tipId = id;
+      tip.classList.add("show");
+    }
+    // position the tooltip above the cursor, clamped inside the canvas
+    let tx = px + 14, ty = py - 14;
+    tip.style.left = tx + "px";
+    tip.style.top = ty + "px";
+  };
+  const hideTip = () => { tip.classList.remove("show"); tipId = null; };
+
   canvas.addEventListener("pointerdown", e => { painting = true; canvas.setPointerCapture(e.pointerId); paintAt(e); });
-  canvas.addEventListener("pointermove", e => { if (painting) paintAt(e); });
+  canvas.addEventListener("pointermove", e => { if (painting) paintAt(e); updateTip(e); });
   canvas.addEventListener("pointerup", () => painting = false);
-  canvas.addEventListener("pointerleave", () => painting = false);
+  canvas.addEventListener("pointerleave", () => { painting = false; hideTip(); });
 
   $("#sb-clear").addEventListener("click", () => sandbox.clearAll());
   $("#sb-pause").addEventListener("click", () => {

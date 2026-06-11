@@ -110,6 +110,13 @@ export class Sandbox {
     this.grid.fill(0); this.temp.fill(20); this.life.fill(0);
   }
 
+  // Return the element id occupying the cell under a pixel coord (or 0 if empty).
+  idAtPixel(px, py) {
+    const cx = Math.floor(px / this.cell), cy = Math.floor(py / this.cell);
+    if (!this.inBounds(cx, cy)) return 0;
+    return this.grid[this.idx(cx, cy)] || 0;
+  }
+
   // ---- main step ----
   step() {
     if (!this.running) return;
