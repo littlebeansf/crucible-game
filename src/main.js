@@ -6,7 +6,7 @@
 
 import { GameState } from "./state.js";
 import { Sandbox } from "./sandbox/engine.js";
-import { svgString, pixelColor } from "./icons.js";
+import { iconHTML, emojiFor, pixelColor } from "./icons.js";
 import { storage } from "./storage.js";
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -38,8 +38,12 @@ async function boot() {
   $("#loading").classList.add("hidden");
   maybeShowWelcome();
   state.on(evt => {
-    if (evt.type === "discover") onDiscover(evt);
-    if (evt.type === "reset") { clearForge(); renderDrawer(); updateStats(); }
+    if (evt.type === "discover") {
+      onDiscover(evt);
+      // a newly discovered physical material should appear in the sandbox bar
+      if (state.el(evt.id)?.phys) renderQuickBar();
+    }
+    if (evt.type === "reset") { clearForge(); renderDrawer(); renderQuickBar(); updateStats(); }
     updateStats();
   });
 }
@@ -58,7 +62,7 @@ function switchMode(m) {
   drawerPhysOnly = (m === "sandbox");
   $("#phys-filter").classList.toggle("active", drawerPhysOnly);
   renderDrawer();
-  if (m === "sandbox") { sandbox.resize(); }
+  if (m === "sandbox") { renderQuickBar(); sandbox.resize(); }
 }
 
 /* ---------------------------------------------------------------------------
@@ -95,7 +99,7 @@ function makeChip(el, draggable) {
   chip.className = "chip cat-" + el.category;
   chip.dataset.id = el.id;
   chip.title = el.name;
-  chip.innerHTML = `<span class="chip-ic">${svgString(el, 30)}</span><span class="chip-name">${el.name}</span>`;
+  chip.innerHTML = `<span class="chip-ic">${iconHTML(el, 32)}</span><span class="chip-name">${el.name}</span>`;
   if (draggable) {
     chip.draggable = true;
     chip.addEventListener("dragstart", e => {
@@ -146,10 +150,11 @@ function spawnOnBoard(id, x, y) {
   node.dataset.uid = ++itemSeq;
   node.style.left = (x - 36) + "px";
   node.style.top = (y - 36) + "px";
-  node.innerHTML = `<div class="bitem-ic">${svgString(el, 46)}</div><div class="bitem-name">${el.name}</div>`;
+  node.innerHTML = `<div class="bitem-ic">${iconHTML(el, 52)}</div><div class="bitem-name">${el.name}</div>`;
   board.appendChild(node);
   const rec = { uid: itemSeq, id, node, x: x-36, y: y-36 };
   boardItems.push(rec);
+  board.classList.add("has-items");
   makeDraggable(rec);
   // pop-in animation
   node.animate([{ transform: "scale(.4)", opacity: 0 }, { transform: "scale(1)", opacity: 1 }], { duration: 220, easing: "cubic-bezier(.2,1.4,.4,1)" });
@@ -214,8 +219,9 @@ function removeItem(rec) {
   const i = boardItems.findIndex(x => x.uid === rec.uid);
   if (i >= 0) boardItems.splice(i, 1);
   rec.node.remove();
+  if (!boardItems.length) board.classList.remove("has-items");
 }
-function clearForge() { boardItems.forEach(r => r.node.remove()); boardItems = []; }
+function clearForge() { boardItems.forEach(r => r.node.remove()); boardItems = []; board.classList.remove("has-items"); }
 
 function flash(x, y, isNew) {
   const f = document.createElement("div");
@@ -252,7 +258,7 @@ function onDiscover(evt) {
   const el = state.el(evt.id);
   renderDrawer();
   const card = $("#discover-card");
-  card.querySelector(".dc-ic").innerHTML = svgString(el, 64);
+  card.querySelector(".dc-ic").innerHTML = iconHTML(el, 56);
   card.querySelector(".dc-name").textContent = el.name;
   card.querySelector(".dc-sub").textContent = el.phys ? "New material · usable in Sandbox" : "New discovery";
   card.classList.add("show");
@@ -273,10 +279,10 @@ function setupSandbox() {
   const canvas = $("#sandbox-canvas");
   sandbox = new Sandbox(canvas, { cell: 5 });
   sandbox.setLibrary(DB.elements);
-  sandbox.currentTool = "sand";
 
   let painting = false;
   const paintAt = e => {
+    if (!sandbox.currentTool) return;
     const r = canvas.getBoundingClientRect();
     const px = (e.clientX - r.left), py = (e.clientY - r.top);
     sandbox.paint(px, py, sandbox.currentTool);
@@ -295,19 +301,7 @@ function setupSandbox() {
   brush.addEventListener("input", e => { sandbox.brushSize = +e.target.value; });
   $("#sb-eraser").addEventListener("click", () => selectSandboxTool("eraser"));
 
-  // quick-pick common materials
-  const quick = ["sand","water","fire","stone","oil","steam","lava","ice","acid","gunpowder","plant","salt"];
-  const qbar = $("#sb-quick");
-  quick.forEach(id => {
-    if (!DB.elements[id]) return;
-    const el = DB.elements[id];
-    const b = document.createElement("button");
-    b.className = "qmat cat-" + el.category;
-    b.title = el.name;
-    b.innerHTML = svgString(el, 26);
-    b.addEventListener("click", () => selectSandboxTool(id));
-    qbar.appendChild(b);
-  });
+  renderQuickBar();
 
   // render loop
   const loop = () => {
@@ -319,14 +313,71 @@ function setupSandbox() {
   window.addEventListener("resize", () => { if (mode === "sandbox") sandbox.resize(); });
 }
 
-function selectSandboxTool(id) {
-  if (mode !== "sandbox") switchMode("sandbox");
-  sandbox.currentTool = id === "eraser" ? "eraser" : id;
-  const el = id === "eraser" ? null : DB.elements[id];
-  $("#sb-current").innerHTML = id === "eraser"
-    ? `<span class="sb-cur-ic">🧽</span> Eraser`
-    : `<span class="sb-cur-ic">${svgString(el, 24)}</span> ${el.name}`;
-  toast(id === "eraser" ? "Eraser selected" : `Painting: ${el.name}`, "🖌️");
+// Build the quick-pick bar from ONLY discovered physical materials, newest-ish
+// first with a stable ordering. Keeps the current tool valid; otherwise selects
+// the first available material (or none, showing an empty-state hint).
+function renderQuickBar() {
+  const qbar = $("#sb-quick");
+  const mats = state.discoveredList({ sort: "tier", physOnly: true });
+  qbar.innerHTML = "";
+  if (!mats.length) {
+    qbar.innerHTML = `<div class="sb-empty">No materials yet — discover physical elements in the ⚗️ Forge and they'll appear here to play with.</div>`;
+    sandbox.currentTool = null;
+    setCurrentLabel(null);
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  for (const el of mats) {
+    const b = document.createElement("button");
+    b.className = "qmat cat-" + el.category;
+    b.dataset.id = el.id;
+    b.title = el.name;
+    b.innerHTML = iconHTML(el, 26);
+    b.addEventListener("click", () => selectSandboxTool(el.id));
+    frag.appendChild(b);
+  }
+  qbar.appendChild(frag);
+
+  // keep current tool valid
+  const valid = new Set(mats.map(m => m.id));
+  if (sandbox.currentTool && sandbox.currentTool !== "eraser" && !valid.has(sandbox.currentTool)) {
+    sandbox.currentTool = null;
+  }
+  if (!sandbox.currentTool) {
+    selectSandboxTool(mats[0].id, true);
+  } else {
+    markActiveQuick(sandbox.currentTool);
+  }
+}
+
+function markActiveQuick(id) {
+  $$("#sb-quick .qmat").forEach(b => b.classList.toggle("active", b.dataset.id === id));
+}
+function setCurrentLabel(el) {
+  const node = $("#sb-current");
+  if (el === "eraser") { node.innerHTML = `<span class="sb-cur-ic">🧽</span> Eraser`; return; }
+  if (!el) { node.innerHTML = `<span class="sb-cur-ic">🎨</span> Pick a material`; return; }
+  node.innerHTML = `<span class="sb-cur-ic">${emojiFor(el)}</span> ${el.name}`;
+}
+
+function selectSandboxTool(id, silent = false) {
+  // Only jump into the sandbox on an explicit user pick, not on silent auto-select.
+  if (mode !== "sandbox" && !silent) switchMode("sandbox");
+  if (id === "eraser") {
+    sandbox.currentTool = "eraser";
+    setCurrentLabel("eraser");
+    markActiveQuick(null);
+    if (!silent) toast("Eraser selected", "🧽");
+    return;
+  }
+  const el = DB.elements[id];
+  // Gate: only discovered, physical materials are placeable in the Sandbox.
+  if (!el || !el.phys) { if (!silent) toast("That element has no physical form.", "⛔"); return; }
+  if (!state.isDiscovered(id)) { if (!silent) toast("Discover it in the Forge first.", "🔒"); return; }
+  sandbox.currentTool = id;
+  setCurrentLabel(el);
+  markActiveQuick(id);
+  if (!silent) toast(`Painting: ${el.name}`, "🖌️");
 }
 
 /* ---------------------------------------------------------------------------
@@ -338,7 +389,7 @@ function startTouchDrag(e, id) {
   const el = state.el(id);
   touchGhost = document.createElement("div");
   touchGhost.className = "ghost";
-  touchGhost.innerHTML = svgString(el, 44);
+  touchGhost.innerHTML = iconHTML(el, 52);
   document.body.appendChild(touchGhost);
   const move = ev => {
     touchGhost.style.left = ev.clientX + "px";
