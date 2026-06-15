@@ -603,28 +603,79 @@ function setupSandbox() {
   window.addEventListener("resize", () => { if (mode === "sandbox") sandbox.resize(); });
 }
 
-// Build the quick-pick bar from ONLY discovered physical materials, newest-ish
-// first with a stable ordering. Keeps the current tool valid; otherwise selects
-// the first available material (or none, showing an empty-state hint).
+// Active sandbox category filter ("all" or a category id). Lets the player
+// narrow the material palette to one family instead of one giant flat row.
+let sbCatFilter = "all";
+
+// Build the quick-pick bar from ONLY discovered physical materials, GROUPED by
+// category with little section headers. A filter row of category tabs lets the
+// player focus on Liquids / Powders / Gases / Solids / Energy at a time.
 function renderQuickBar() {
   const qbar = $("#sb-quick");
+  const tabsRow = $("#sb-cat-tabs");
   const mats = state.discoveredList({ sort: "tier", physOnly: true });
   qbar.innerHTML = "";
+  if (tabsRow) tabsRow.innerHTML = "";
+
   if (!mats.length) {
     qbar.innerHTML = `<div class="sb-empty">No materials yet — discover physical elements in the ⚗️ Forge and they'll appear here to play with.</div>`;
     sandbox.currentTool = null;
     setCurrentLabel(null);
     return;
   }
-  const frag = document.createDocumentFragment();
+
+  // group materials by category, preserving CATEGORY_META order
+  const groups = new Map();
   for (const el of mats) {
-    const b = document.createElement("button");
-    b.className = "qmat cat-" + el.category;
-    b.dataset.id = el.id;
-    b.title = el.name;
-    b.innerHTML = iconHTML(el, 26);
-    b.addEventListener("click", () => selectSandboxTool(el.id));
-    frag.appendChild(b);
+    if (!groups.has(el.category)) groups.set(el.category, []);
+    groups.get(el.category).push(el);
+  }
+  const orderedCats = [...groups.keys()].sort((a, b) => catMeta(a).order - catMeta(b).order);
+
+  // --- category filter tabs (All + each present category) ---
+  if (tabsRow) {
+    if (!groups.has(sbCatFilter) && sbCatFilter !== "all") sbCatFilter = "all";
+    const mkTab = (key, label) => {
+      const t = document.createElement("button");
+      t.className = "sb-cat-tab" + (sbCatFilter === key ? " active" : "");
+      t.dataset.cat = key;
+      t.textContent = label;
+      t.addEventListener("click", () => { sbCatFilter = key; renderQuickBar(); });
+      return t;
+    };
+    tabsRow.appendChild(mkTab("all", `All · ${mats.length}`));
+    for (const cat of orderedCats) {
+      const m = catMeta(cat);
+      tabsRow.appendChild(mkTab(cat, `${m.emoji} ${m.label} ${groups.get(cat).length}`));
+    }
+  }
+
+  // --- material sections ---
+  const frag = document.createDocumentFragment();
+  const catsToShow = sbCatFilter === "all" ? orderedCats : [sbCatFilter];
+  for (const cat of catsToShow) {
+    const list = groups.get(cat) || [];
+    if (!list.length) continue;
+    const m = catMeta(cat);
+    const section = document.createElement("div");
+    section.className = "sb-cat-section";
+    const head = document.createElement("div");
+    head.className = "sb-cat-head";
+    head.innerHTML = `<span class="sb-cat-dot cat-${cat}"></span>${m.emoji} ${m.label} <span class="sb-cat-n">${list.length}</span>`;
+    section.appendChild(head);
+    const row = document.createElement("div");
+    row.className = "sb-cat-mats";
+    for (const el of list) {
+      const b = document.createElement("button");
+      b.className = "qmat cat-" + el.category;
+      b.dataset.id = el.id;
+      b.title = el.name;
+      b.innerHTML = iconHTML(el, 26);
+      b.addEventListener("click", () => selectSandboxTool(el.id));
+      row.appendChild(b);
+    }
+    section.appendChild(row);
+    frag.appendChild(section);
   }
   qbar.appendChild(frag);
 

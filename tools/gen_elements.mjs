@@ -446,17 +446,29 @@ const liquids = physElsByState("liquid");
 const gases = physElsByState("gas");
 
 let mixCount = 0;
+// Recognizable names + emoji for the curated mixtures (keyed by sorted id pair)
+const MIXTURE_NAMES = {
+  "salt_water":      ["Saltwater", "🌊"],
+  "mud_water":       ["Slurry", "💧"],
+  "oil_water":       ["Oil Slick", "🛢️"],
+  "clay_sand":       ["Ceramic Mix", "🏺"],
+  "ash_charcoal":    ["Soot", "🌫️"],
+  "gravel_sand":     ["Aggregate", "🪨"],
+  "hydrogen_oxygen": ["Oxyhydrogen", "💥"],
+};
 function mintMixture(x, y, stateHint) {
   if (x.id === y.id) return;
-  const id = `mix_${[x.id, y.id].sort().join("_")}`;
+  const key = [x.id, y.id].sort().join("_");
+  const id = `mix_${key}`;
   if (elements.has(id)) return;
   const a = x.phys, b = y.phys;
   const density = ((a.density ?? 3) + (b.density ?? 3)) / 2;
   const flammable = !!(a.flammable || b.flammable);
   const behavior = stateHint === "liquid" ? "water" : stateHint === "gas" ? "gas" : "powder";
+  const [nm, emo] = MIXTURE_NAMES[key] || [`${x.name}-${y.name} Mix`, "🌀"];
   el(id, {
-    name: `${x.name}-${y.name} Mix`,
-    emoji: "🌀", icon: "auto:" + id,
+    name: nm,
+    emoji: emo, icon: "auto:" + id,
     tier: Math.max(x.tier, y.tier) + 1,
     category: stateHint,
     tags: Array.from(new Set([...(x.tags||[]), ...(y.tags||[]), "mixture"])),
@@ -471,10 +483,28 @@ function blendColor(c1, c2) {
   const m = (a,b)=>Math.round((a+b)/2).toString(16).padStart(2,"0");
   return `#${m(r1,r2)}${m(g1,g2)}${m(b1,b2)}`;
 }
-for (let i=0;i<powders.length;i++) for (let j=i+1;j<powders.length;j++) mintMixture(powders[i],powders[j],"powder");
-for (let i=0;i<liquids.length;i++) for (let j=i+1;j<liquids.length;j++) mintMixture(liquids[i],liquids[j],"liquid");
-for (let i=0;i<gases.length;i++) for (let j=i+1;j<gases.length;j++) mintMixture(gases[i],gases[j],"gas");
-console.log("Mixture expansion added:", mixCount, "total:", elements.size);
+// NOTE: the old full cross-product (every powder×powder, liquid×liquid, gas×gas)
+// minted ~170 redundant "X-Y Mix" materials that bloated the inventory and the
+// Sandbox material bar without adding meaningful, distinct behavior. We now mint
+// ONLY a small curated set of real, recognizable mixtures whose combination
+// genuinely makes sense (and which behave noticeably differently).
+const CURATED_MIXTURES = [
+  // liquid blends people actually recognize
+  // (salt+water -> Saltwater already exists as a dedicated element, so skip)
+  ["water", "mud", "liquid"],      // muddy water / slurry
+  ["oil", "water", "liquid"],      // oil + water (won't mix IRL — fun)
+  // powder blends
+  ["sand", "clay", "powder"],      // raw ceramic mix
+  ["ash", "charcoal", "powder"],   // soot
+  ["sand", "gravel", "powder"],    // aggregate
+  // gas blends
+  ["oxygen", "hydrogen", "gas"],   // detonating mix
+];
+for (const [aId, bId, st] of CURATED_MIXTURES) {
+  const x = elements.get(aId), y = elements.get(bId);
+  if (x && y && x.phys && y.phys) mintMixture(x, y, st);
+}
+console.log("Curated mixtures added:", mixCount, "total:", elements.size);
 
 /* ---- FOURTH-ORDER: "ERA / PLACE" THEMED SETS (taps user's interests:
    venues, travel, music) — gives flavor & more breadth.                         */
