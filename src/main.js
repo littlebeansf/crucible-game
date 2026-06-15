@@ -31,6 +31,7 @@ async function boot() {
   setupDrawer();
   setupForge();
   setupSandbox();
+  setupCatalog();
   setupTopbar();
   renderDrawer();
   updateStats();
@@ -43,7 +44,8 @@ async function boot() {
       // a newly discovered physical material should appear in the sandbox bar
       if (state.el(evt.id)?.phys) renderQuickBar();
     }
-    if (evt.type === "reset") { clearForge(); renderDrawer(); renderQuickBar(); updateStats(); }
+    if (evt.type === "discover" && mode === "catalog") renderCatalog();
+    if (evt.type === "reset") { clearForge(); renderDrawer(); renderQuickBar(); updateStats(); if (mode === "catalog") renderCatalog(); }
     updateStats();
   });
 }
@@ -59,10 +61,14 @@ function switchMode(m) {
   $$(".tab").forEach(t => t.classList.toggle("active", t.dataset.mode === m));
   $("#forge-view").classList.toggle("hidden", m !== "forge");
   $("#sandbox-view").classList.toggle("hidden", m !== "sandbox");
+  $("#catalog-view").classList.toggle("hidden", m !== "catalog");
+  // the element drawer is only useful in Forge/Sandbox; hide it in Catalog
+  document.body.classList.toggle("catalog-mode", m === "catalog");
   drawerPhysOnly = (m === "sandbox");
   $("#phys-filter").classList.toggle("active", drawerPhysOnly);
   renderDrawer();
   if (m === "sandbox") { renderQuickBar(); sandbox.resize(); }
+  if (m === "catalog") renderCatalog();
 }
 
 /* ---------------------------------------------------------------------------
@@ -160,6 +166,121 @@ function makeChip(el, draggable) {
     });
   }
   return chip;
+}
+
+/* ---------------------------------------------------------------------------
+   CATALOG — Pokédex-style collection: per-category progress + locked silhouettes
+--------------------------------------------------------------------------- */
+let catActiveCat = null;   // currently selected category in the rail
+let catQuery = "";
+
+function setupCatalog() {
+  $("#cat-search").addEventListener("input", e => { catQuery = e.target.value; renderCatalogDetail(); });
+}
+
+// Phase-change hint chips for an element (freeze/melt/boil thresholds, flags).
+function phaseHintHTML(el) {
+  const info = state.phaseInfo(el);
+  if (!info) return "";
+  const chips = [];
+  const nm = id => state.el(id)?.name || id;
+  if (info.freeze) chips.push(`<span class="ph ph-cold">❄ ≤ ${info.freeze.at}° → ${nm(info.freeze.to)}</span>`);
+  if (info.melt)   chips.push(`<span class="ph ph-hot">🔥 ≥ ${info.melt.at}° → ${nm(info.melt.to)}</span>`);
+  if (info.boil)   chips.push(`<span class="ph ph-hot">♨ ≥ ${info.boil.at}° → ${nm(info.boil.to)}</span>`);
+  if (info.condense) chips.push(`<span class="ph ph-cold">💧 ≤ ${info.condense.at}° → ${nm(info.condense.to)}</span>`);
+  if (info.flammable) chips.push(`<span class="ph ph-flag">🔥 Flammable</span>`);
+  if (info.conductive) chips.push(`<span class="ph ph-flag">⚡ Conductive</span>`);
+  if (info.explosive) chips.push(`<span class="ph ph-flag">💥 Explosive</span>`);
+  if (info.soluble) chips.push(`<span class="ph ph-flag">🧂 Soluble</span>`);
+  return chips.length ? `<div class="ph-row">${chips.join("")}</div>` : "";
+}
+
+function renderCatalog() {
+  renderCatalogRail();
+  if (!catActiveCat) {
+    // default to the category with the most discovered entries
+    const cs = state.categoryStats().byCategory;
+    let best = null, bestN = -1;
+    for (const [c, v] of Object.entries(cs)) if (v.found > bestN) { bestN = v.found; best = c; }
+    catActiveCat = best || Object.keys(cs)[0];
+  }
+  renderCatalogDetail();
+}
+
+function renderCatalogRail() {
+  const cs = state.categoryStats();
+  const rail = $("#cat-rail");
+  // overall header
+  const totalFound = state.discovered.size;
+  const totalAll = Object.keys(DB.elements).length;
+  $("#cat-overall-pct").textContent = ((totalFound / totalAll) * 100).toFixed(1) + "%";
+  $("#cat-overall-found").textContent = totalFound;
+  $("#cat-overall-total").textContent = totalAll;
+
+  const entries = Object.entries(cs.byCategory)
+    .sort((a, b) => catMeta(a[0]).order - catMeta(b[0]).order);
+  // a couple of special "property" buckets at the top
+  const special = [
+    ["⚛︎ Physical materials", cs.phys, "phys"],
+    ["🌱 Lifeforms", cs.life, "life-bucket"],
+  ];
+  let html = `<div class="rail-section">Properties</div>`;
+  for (const [label, v] of special) {
+    const pct = v.total ? Math.round((v.found / v.total) * 100) : 0;
+    html += railRow(label, v.found, v.total, pct, null, true);
+  }
+  html += `<div class="rail-section">Categories</div>`;
+  for (const [cat, v] of entries) {
+    const m = catMeta(cat);
+    const pct = v.total ? Math.round((v.found / v.total) * 100) : 0;
+    html += railRow(`${m.emoji} ${m.label}`, v.found, v.total, pct, cat, false);
+  }
+  rail.innerHTML = html;
+  $$("#cat-rail .cat-row[data-cat]").forEach(row => {
+    row.addEventListener("click", () => { catActiveCat = row.dataset.cat; renderCatalogDetail(); });
+  });
+}
+
+function railRow(label, found, total, pct, cat, isProperty) {
+  const active = cat && cat === catActiveCat ? " active" : "";
+  const clickable = cat ? ` data-cat="${cat}"` : "";
+  return `<button class="cat-row${active}${isProperty ? " is-prop" : ""}"${clickable}>
+      <div class="cat-row-top"><span class="cat-row-label">${label}</span><span class="cat-row-num">${found}/${total}</span></div>
+      <div class="cat-bar"><span style="width:${pct}%"></span></div>
+    </button>`;
+}
+
+function renderCatalogDetail() {
+  const detail = $("#cat-detail");
+  if (!catActiveCat) { detail.innerHTML = ""; return; }
+  // refresh rail active state without full re-render
+  $$("#cat-rail .cat-row[data-cat]").forEach(r => r.classList.toggle("active", r.dataset.cat === catActiveCat));
+  const m = catMeta(catActiveCat);
+  const list = state.catalogCategory(catActiveCat, { query: catQuery });
+  const cs = state.categoryStats().byCategory[catActiveCat] || { found: 0, total: 0 };
+  const pct = cs.total ? ((cs.found / cs.total) * 100).toFixed(0) : 0;
+
+  const head = `<div class="cat-detail-head">
+      <span class="cdh-title">${m.emoji} ${m.label}</span>
+      <span class="cdh-prog">${cs.found} / ${cs.total} · ${pct}%</span>
+    </div>`;
+
+  const cells = list.map(({ el, found }) => {
+    if (!found) {
+      // Pokédex silhouette for locked entries
+      return `<div class="cat-cell locked" title="Undiscovered"><span class="cc-ic">❔</span><span class="cc-name">???</span></div>`;
+    }
+    const ph = phaseHintHTML(el);
+    const physBadge = el.phys ? `<span class="cc-phys" title="Usable in the Sandbox">⚛︎</span>` : "";
+    return `<div class="cat-cell found cat-${el.category}" data-id="${el.id}">
+        <span class="cc-ic">${iconHTML(el, 30)}</span>
+        <span class="cc-name">${el.name}</span>
+        ${physBadge}
+        ${ph}
+      </div>`;
+  }).join("");
+
+  detail.innerHTML = head + `<div class="cat-grid-pdex">${cells || '<div class="cat-empty">No matches.</div>'}</div>`;
 }
 
 /* ---------------------------------------------------------------------------
@@ -385,6 +506,7 @@ function setupSandbox() {
   const canvas = $("#sandbox-canvas");
   sandbox = new Sandbox(canvas, { cell: 5 });
   sandbox.setLibrary(DB.elements);
+  if (window.__crucible) window.__crucible.sandbox = sandbox; // debug handle
 
   let painting = false;
   const paintAt = e => {
@@ -396,10 +518,20 @@ function setupSandbox() {
   // Hover tooltip: shows which element sits under the cursor.
   const tip = $("#sb-tooltip");
   let tipId = null;
+  // HUD readout nodes (live temp / pressure / phase under the cursor)
+  const hudTemp = $("#hud-temp"), hudPress = $("#hud-press"), hudPhase = $("#hud-phase"), hudEl = $("#hud-el");
   const updateTip = e => {
     const r = canvas.getBoundingClientRect();
     const px = e.clientX - r.left, py = e.clientY - r.top;
     const id = sandbox.idAtPixel(px, py);
+    // ---- live HUD readout (works on empty cells too: shows ambient air) ----
+    const ro = sandbox.readoutAtPixel(px, py);
+    if (ro) {
+      hudTemp.textContent = `${Math.round(ro.temp)}°C`;
+      hudPress.textContent = `${(1 + ro.pressure).toFixed(1)} atm`;
+      hudPhase.textContent = ro.phase || "—";
+      hudEl.textContent = ro.name || "empty";
+    }
     if (!id) {
       if (tipId !== null) { tip.classList.remove("show"); tipId = null; }
       return;
@@ -418,6 +550,32 @@ function setupSandbox() {
     tip.style.top = ty + "px";
   };
   const hideTip = () => { tip.classList.remove("show"); tipId = null; };
+
+  // ---- Event log: phase changes & reactions pushed from the engine ----
+  const logList = $("#sb-log-list");
+  const LOG_CAP = 60;
+  sandbox.onEvent = (evt) => {
+    const empty = logList.querySelector(".log-empty");
+    if (empty) empty.remove();
+    const li = document.createElement("li");
+    li.className = "log-item log-" + (evt.kind || "reaction");
+    const icon = evt.kind === "phase" ? "❄" : evt.kind === "pressure" ? "⏲" : "⚗";
+    li.innerHTML = `<span class="log-ic">${icon}</span><span class="log-txt">${evt.text}</span>`;
+    logList.insertBefore(li, logList.firstChild);
+    while (logList.children.length > LOG_CAP) logList.removeChild(logList.lastChild);
+  };
+  const logEmpty = () => {
+    logList.innerHTML = `<li class="log-empty">Reactions and phase changes will appear here.</li>`;
+  };
+  $("#sb-log-toggle").addEventListener("click", () => {
+    const open = $("#sb-log").classList.toggle("open");
+    $("#sb-log-toggle").classList.toggle("active", open);
+  });
+  $("#sb-log-clear").addEventListener("click", () => {
+    sandbox.events = [];
+    if (sandbox.eventSeen) sandbox.eventSeen.clear();
+    logEmpty();
+  });
 
   canvas.addEventListener("pointerdown", e => { painting = true; canvas.setPointerCapture(e.pointerId); paintAt(e); });
   canvas.addEventListener("pointermove", e => { if (painting) paintAt(e); updateTip(e); });

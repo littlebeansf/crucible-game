@@ -30,7 +30,32 @@ export class Sandbox {
     this.brushSize = 3;
     this.currentTool = null;  // element id to paint
     this.gravity = 1;
+    // --- event log (ring buffer of notable reactions / phase changes) ---
+    this.events = [];          // newest last: {frame, kind, text, a, b, key}
+    this.eventSeen = new Map(); // de-dupe key -> last frame logged
+    this.maxEvents = 60;
+    this.onEvent = null;       // optional callback(evt) for live UI
+    this.pressureEnabled = true;
     this.resize();
+  }
+
+  // push a notable event, de-duped so we don't spam identical reactions every frame
+  logEvent(kind, text, dedupeKey) {
+    const dk = dedupeKey || (kind + "|" + text);
+    const last = this.eventSeen.get(dk);
+    if (last != null && this.frame - last < 45) return; // throttle identical events (~0.75s)
+    this.eventSeen.set(dk, this.frame);
+    const evt = { frame: this.frame, kind, text };
+    this.events.push(evt);
+    if (this.events.length > this.maxEvents) this.events.shift();
+    if (this.onEvent) { try { this.onEvent(evt); } catch (e) {} }
+  }
+
+  // human-friendly element name for logs/HUD
+  nameOf(id) {
+    if (!id) return "Air";
+    const el = this.elements && this.elements[id];
+    return (el && el.name) || id;
   }
 
   setLibrary(elements) {
@@ -54,6 +79,7 @@ export class Sandbox {
       this.temp = new Float32Array(N).fill(20);
       this.life = new Int16Array(N).fill(0);
       this.tint = new Float32Array(N); // per-cell color jitter [-1,1]
+      this.pressure = new Float32Array(N); // 0 = ambient; higher = trapped gas buildup
     }
   }
 
@@ -84,7 +110,7 @@ export class Sandbox {
 
   clearCell(x, y) {
     const i = this.idx(x, y);
-    this.grid[i] = 0; this.temp[i] = 20; this.life[i] = 0;
+    this.grid[i] = 0; this.temp[i] = 20; this.life[i] = 0; this.pressure[i] = 0;
   }
 
   paint(px, py, id) {
@@ -107,7 +133,8 @@ export class Sandbox {
   }
 
   clearAll() {
-    this.grid.fill(0); this.temp.fill(20); this.life.fill(0);
+    this.grid.fill(0); this.temp.fill(20); this.life.fill(0); this.pressure.fill(0);
+    this.events.length = 0; this.eventSeen.clear();
   }
 
   // Return the element id occupying the cell under a pixel coord (or 0 if empty).
@@ -115,6 +142,35 @@ export class Sandbox {
     const cx = Math.floor(px / this.cell), cy = Math.floor(py / this.cell);
     if (!this.inBounds(cx, cy)) return 0;
     return this.grid[this.idx(cx, cy)] || 0;
+  }
+
+  // --- HUD accessors: read temperature / pressure / phase under a pixel ---
+  tempAtPixel(px, py) {
+    const cx = Math.floor(px / this.cell), cy = Math.floor(py / this.cell);
+    if (!this.inBounds(cx, cy)) return 20;
+    return this.temp[this.idx(cx, cy)];
+  }
+  pressureAtPixel(px, py) {
+    const cx = Math.floor(px / this.cell), cy = Math.floor(py / this.cell);
+    if (!this.inBounds(cx, cy)) return 0;
+    return this.pressure[this.idx(cx, cy)];
+  }
+  // phase/state label for an element id at a pixel (uses temperature when relevant)
+  phaseAtPixel(px, py) {
+    const id = this.idAtPixel(px, py);
+    if (!id) return "gas"; // empty cell = open air
+    return this.state(id);
+  }
+  // descriptive readout object for the HUD
+  readoutAtPixel(px, py) {
+    const id = this.idAtPixel(px, py);
+    return {
+      id,
+      name: this.nameOf(id),
+      temp: Math.round(this.tempAtPixel(px, py)),
+      pressure: +(this.pressureAtPixel(px, py)).toFixed(2),
+      phase: id ? this.state(id) : "empty",
+    };
   }
 
   // ---- main step ----
@@ -133,6 +189,49 @@ export class Sandbox {
       }
     }
     this.diffuseHeat();
+    this.updatePressure();
+  }
+
+  // Light enclosed-gas pressure model (cheap, runs every 3rd frame).
+  // A gas/empty cell gains pressure when blocked above by solid/liquid/powder
+  // (trapped, can't rise) and loses it when open above. Pressure also relaxes
+  // toward ambient so it reads naturally. Logs a "high pressure" event once
+  // a cell crosses a threshold, so the event log surfaces sealed gas pockets.
+  updatePressure() {
+    if (!this.pressureEnabled) return;
+    if ((this.frame % 3) !== 0) return;
+    const { W, H, grid, pressure } = this;
+    let peak = 0, peakX = -1, peakY = -1;
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const i = this.idx(x, y);
+        const id = grid[i];
+        const st = id ? this.state(id) : "empty";
+        const isGasLike = st === "gas" || st === "empty";
+        if (!isGasLike) { pressure[i] = 0; continue; }
+        // is this gas trapped? check the cell directly above
+        let trapped = 0;
+        if (y > 0) {
+          const aid = grid[this.idx(x, y - 1)];
+          const ast = aid ? this.state(aid) : "empty";
+          if (ast === "solid" || ast === "liquid" || ast === "powder") trapped++;
+        } else trapped++; // top wall counts as a lid
+        // sealed sides add a little
+        const lid = (x === 0) || (grid[this.idx(x - 1, y)] && this.state(grid[this.idx(x - 1, y)]) !== "gas" && this.state(grid[this.idx(x - 1, y)]) !== "empty");
+        const rid = (x === W - 1) || (grid[this.idx(x + 1, y)] && this.state(grid[this.idx(x + 1, y)]) !== "gas" && this.state(grid[this.idx(x + 1, y)]) !== "empty");
+        if (lid && rid) trapped += 0.5;
+        // real gas (not just air) under a lid builds more pressure
+        const gasMass = st === "gas" ? 1 : 0.35;
+        const target = trapped > 0 ? trapped * gasMass * 1.4 : 0;
+        // ease toward target so it's smooth and mobile-cheap
+        pressure[i] += (target - pressure[i]) * 0.25;
+        if (pressure[i] > peak) { peak = pressure[i]; peakX = x; peakY = y; }
+      }
+    }
+    if (peak >= 1.6 && peakX >= 0) {
+      const id = grid[this.idx(peakX, peakY)];
+      this.logEvent("pressure", `High pressure pocket (${this.nameOf(id)}) building up`, "pressure-high");
+    }
   }
 
   swap(x1, y1, x2, y2) {
@@ -141,6 +240,7 @@ export class Sandbox {
     const t = this.temp[i]; this.temp[i] = this.temp[j]; this.temp[j] = t;
     const l = this.life[i]; this.life[i] = this.life[j]; this.life[j] = l;
     const ti = this.tint[i]; this.tint[i] = this.tint[j]; this.tint[j] = ti;
+    const pr = this.pressure[i]; this.pressure[i] = this.pressure[j]; this.pressure[j] = pr;
   }
 
   updateCell(x, y, id) {
@@ -306,11 +406,26 @@ export class Sandbox {
     const t = this.temp[i];
 
     // phase changes by temperature
-    if (p.boilTo && t >= 100 && this.has(p.boilTo)) { this.set(x, y, p.boilTo); return true; }
-    if (p.freezeTo && t <= 0 && this.has(p.freezeTo)) { this.set(x, y, p.freezeTo); return true; }
-    if (p.meltTo && t >= (p.meltAt ?? 5) && this.has(p.meltTo)) { this.set(x, y, p.meltTo); return true; }
-    if (p.condenseTo && t <= 95 && p.state === "gas" && Math.random() < 0.02 && this.has(p.condenseTo)) { this.set(x, y, p.condenseTo); return true; }
-    if (p.coolTo && t <= 600 && this.has(p.coolTo)) { this.set(x, y, p.coolTo); return true; }
+    if (p.boilTo && t >= 100 && this.has(p.boilTo)) {
+      this.logEvent("phase", `${this.nameOf(id)} boiled into ${this.nameOf(p.boilTo)}`, "boil|"+id);
+      this.set(x, y, p.boilTo); return true;
+    }
+    if (p.freezeTo && t <= 0 && this.has(p.freezeTo)) {
+      this.logEvent("phase", `${this.nameOf(id)} froze into ${this.nameOf(p.freezeTo)}`, "freeze|"+id);
+      this.set(x, y, p.freezeTo); return true;
+    }
+    if (p.meltTo && t >= (p.meltAt ?? 5) && this.has(p.meltTo)) {
+      this.logEvent("phase", `${this.nameOf(id)} melted into ${this.nameOf(p.meltTo)}`, "melt|"+id);
+      this.set(x, y, p.meltTo); return true;
+    }
+    if (p.condenseTo && t <= 95 && p.state === "gas" && Math.random() < 0.02 && this.has(p.condenseTo)) {
+      this.logEvent("phase", `${this.nameOf(id)} condensed into ${this.nameOf(p.condenseTo)}`, "condense|"+id);
+      this.set(x, y, p.condenseTo); return true;
+    }
+    if (p.coolTo && t <= 600 && this.has(p.coolTo)) {
+      this.logEvent("phase", `${this.nameOf(id)} cooled into ${this.nameOf(p.coolTo)}`, "cool|"+id);
+      this.set(x, y, p.coolTo); return true;
+    }
 
     const neigh = [[0,1],[0,-1],[1,0],[-1,0]];
     for (const [dx, dy] of neigh) {
@@ -324,6 +439,7 @@ export class Sandbox {
 
       // lava + water -> stone + steam
       if (p.behavior === "lava" && np.behavior === "water") {
+        this.logEvent("reaction", `${this.nameOf(id)} + ${this.nameOf(nid)} → Stone + Steam`, "lava-water");
         if (this.has("stone")) this.set(x, y, "stone");
         if (this.has("steam")) this.set(nx, ny, "steam");
         return true;
@@ -332,20 +448,28 @@ export class Sandbox {
       // acid eats solids/powders (not glass)
       if (p.behavior === "acid" && (np.state === "solid" || np.state === "powder")
           && !(np.tags && np.tags.includes && np.tags.includes("glassy"))) {
-        if (Math.random() < 0.08) { this.clearCell(nx, ny); if (Math.random()<0.4) this.clearCell(x,y); return true; }
+        if (Math.random() < 0.08) {
+          this.logEvent("reaction", `Acid dissolved ${this.nameOf(nid)}`, "acid|"+nid);
+          this.clearCell(nx, ny); if (Math.random()<0.4) this.clearCell(x,y); return true;
+        }
       }
       // water extinguishes fire
       if (p.behavior === "water" && (np.behavior === "fire")) {
+        this.logEvent("reaction", `Water extinguished Fire → Steam`, "water-fire");
         this.clearCell(nx, ny);
         if (this.has("steam")) this.set(x, y, "steam");
         return true;
       }
       // salt dissolves in water
       if (p.soluble && np.behavior === "water" && Math.random() < 0.05) {
-        if (this.has("saltwater")) { this.set(nx, ny, "saltwater"); this.clearCell(x, y); return true; }
+        if (this.has("saltwater")) {
+          this.logEvent("reaction", `${this.nameOf(id)} dissolved into Saltwater`, "soluble|"+id);
+          this.set(nx, ny, "saltwater"); this.clearCell(x, y); return true;
+        }
       }
       // plant grows into adjacent water/empty toward light (up) occasionally
       if (p.behavior === "plant" && np.behavior === "water" && Math.random() < 0.01) {
+        this.logEvent("reaction", `${this.nameOf(id)} grew into Water`, "grow|"+id);
         this.set(nx, ny, id); return false;
       }
       // heat transfer for reactions: hot neighbor heats us
@@ -354,6 +478,7 @@ export class Sandbox {
       }
       // ignite if flammable & hot neighbor
       if (p.flammable && np.behavior === "fire" && Math.random() < 0.3 && this.has("fire")) {
+        this.logEvent("reaction", `${this.nameOf(id)} caught Fire`, "ignite|"+id);
         this.set(x, y, "fire"); return true;
       }
     }
@@ -400,6 +525,12 @@ export class Sandbox {
     if (temp > 300) { // glow toward orange/white
       const f = Math.min(1, (temp - 300) / 1500);
       r = Math.min(255, r + 180*f); g = Math.min(255, g + 90*f);
+    } else if (temp > 80) { // warm: nudge toward orange
+      const f = Math.min(1, (temp - 80) / 220);
+      r = Math.min(255, r + 50*f); g = Math.min(255, g + 18*f); b = Math.max(0, b - 20*f);
+    } else if (temp < 0) { // cold: nudge toward icy blue
+      const f = Math.min(1, (-temp) / 40);
+      b = Math.min(255, b + 70*f); g = Math.min(255, g + 25*f); r = Math.max(0, r - 30*f);
     }
     return `rgb(${r|0},${g|0},${b|0})`;
   }

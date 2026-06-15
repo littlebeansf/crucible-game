@@ -620,6 +620,327 @@ for (const modId of eighthMods) {
 }
 console.log("Themed-modifier expansion added:", eighth, "total:", elements.size);
 
+/* ===========================================================================
+   NINTH-ORDER: THE GREAT MENAGERIE — a big, sensible LIFEFORMS expansion.
+   Real biology (kingdoms → habitats → species), plus a broad creatures &
+   mythology layer. Every entry has a sensible recipe so it's discoverable.
+   All living things are flagged with the "alive" tag so the Catalog can show
+   a dedicated lifeform count.
+=========================================================================== */
+let lifeCount = 0;
+function L(a, b, id, name, emoji, extraTags = [], tier = 6) {
+  el(id, { name, emoji, icon: "auto:" + id, tier, category: "life",
+    tags: Array.from(new Set(["organic", "alive", ...extraTags])) });
+  combine(a, b, id, null);
+  lifeCount++;
+  return id;
+}
+// make sure the base "alive" flag is on the canonical creatures too
+for (const baseLife of ["bacteria","amoeba","plant","grass","tree","flower","fish","lizard","dinosaur","bird","animal","human"]) {
+  const e = elements.get(baseLife);
+  if (e && !e.tags.includes("alive")) e.tags = Array.from(new Set([...e.tags, "alive"]));
+}
+
+/* --- microbiology & fungi --- */
+L("bacteria","acid","microbe_archaea","Archaea","🦠",["micro"],5);
+L("bacteria","sun","microbe_algae","Algae","🟢",["micro","plant"],5);
+L("microbe_algae","sea","microbe_plankton","Plankton","🦠",["micro","sea"],6);
+L("microbe_plankton","plant","microbe_phytoplankton","Phytoplankton","🌿",["micro","sea"],7);
+L("bacteria","life","microbe_virus","Virus","🦠",["micro"],5);
+L("amoeba","water","microbe_protozoa","Protozoa","🦠",["micro"],6);
+L("plant","water","fungi_mold","Mold","🟩",["fungus"],5);
+L("fungi_mold","tree","fungi_mushroom","Mushroom","🍄",["fungus"],6);
+L("fungi_mushroom","toxic","fungi_toadstool","Toadstool","🍄",["fungus","toxic"],7);
+L("fungi_mold","bread","fungi_yeast","Yeast","🟡",["fungus"],6);
+L("fungi_mushroom","stone","fungi_lichen","Lichen","🟢",["fungus","plant"],6);
+
+/* --- plants (flora) --- */
+const flora = [
+  ["plant","sun","flora_fern","Fern","🌿"],
+  ["plant","water","flora_moss","Moss","🟢"],
+  ["flower","water","flora_lily","Water Lily","🌸"],
+  ["flower","sun","flora_sunflower","Sunflower","🌻"],
+  ["flower","love","flora_rose","Rose","🌹"],
+  ["flower","cold","flora_tulip","Tulip","🌷"],
+  ["tree","sand","flora_palm","Palm Tree","🌴"],
+  ["tree","cold","flora_pine","Pine","🌲"],
+  ["tree","water","flora_willow","Willow","🌳"],
+  ["tree","flower","flora_cherry_blossom","Cherry Blossom","🌸"],
+  ["grass","sand","flora_cactus","Cactus","🌵"],
+  ["grass","water","flora_reed","Reed","🌾"],
+  ["wheat","sun","flora_corn","Corn","🌽"],
+  ["plant","giant","flora_bamboo","Bamboo","🎋"],
+  ["flower","toxic","flora_venus_flytrap","Venus Flytrap","🪴"],
+  ["tree","giant","flora_redwood","Redwood","🌲"],
+  ["flower","sea","flora_seaweed","Seaweed","🌿"],
+  ["flower","magic","flora_orchid","Orchid","🌺"],
+];
+flora.forEach(([a,b,id,nm,em]) => L(a,b,id,nm,em,["plant","flora"],6));
+
+/* --- fruits & edible plants (life + food crossover) --- */
+const crops = [
+  ["flora_cherry_blossom","time","crop_cherry","Cherry","🍒"],
+  ["tree","sun","crop_apple","Apple","🍎"],
+  ["tree","water","crop_pear","Pear","🍐"],
+  ["flora_palm","sun","crop_coconut","Coconut","🥥"],
+  ["grass","sun","crop_banana","Banana","🍌"],
+  ["flower","water","crop_grape","Grape","🍇"],
+  ["flora_reed","sun","crop_strawberry","Strawberry","🍓"],
+  ["crop_apple","cold","crop_orange","Orange","🍊"],
+  ["plant","sun","crop_tomato","Tomato","🍅"],
+  ["flora_cactus","sun","crop_pineapple","Pineapple","🍍"],
+];
+crops.forEach(([a,b,id,nm,em]) => L(a,b,id,nm,em,["plant","fruit","food"],7));
+
+/* --- insects & arthropods --- */
+const bugs = [
+  ["animal","flower","bug_bee","Bee","🐝"],
+  ["animal","flora_rose","bug_butterfly","Butterfly","🦋"],
+  ["animal","mud","bug_worm","Worm","🪱"],
+  ["animal","grass","bug_grasshopper","Grasshopper","🦗"],
+  ["animal","light","bug_firefly","Firefly","✨"],
+  ["animal","wood","bug_ant","Ant","🐜"],
+  ["bug_ant","giant","bug_termite","Termite","🐜"],
+  ["animal","water","bug_mosquito","Mosquito","🦟"],
+  ["animal","dust","bug_fly","Fly","🪰"],
+  ["animal","sand","bug_scorpion","Scorpion","🦂"],
+  ["bug_worm","sea","bug_snail","Snail","🐌"],
+  ["animal","leaf","bug_ladybug","Ladybug","🐞"],
+  ["bug_bee","time","bug_wasp","Wasp","🐝"],
+  ["animal","silk","bug_caterpillar","Caterpillar","🐛"],
+  ["animal","swamp","bug_dragonfly","Dragonfly","🦗"],
+];
+// seed a few needed simple partners
+[["light","Light","💡","energy"],["leaf","Leaf","🍃","life"],["silk","Silk","🧵","object"],["swamp","Swamp","🐊","structure"]].forEach(([id,nm,em,cat])=>{
+  if(!elements.has(id)){ el(id,{name:nm,emoji:em,icon:"auto:"+id,tier:5,category:cat,tags:[cat]}); }
+});
+if(!recipes.has(key("sun","energy"))) combine("sun","energy","light",null);
+if(!recipes.has(key("plant","grass"))) {} // leaf needs a recipe
+combine("tree","wind","leaf",null);
+combine("bug_caterpillar","tree","silk",null);
+combine("water","mud","swamp",null);
+bugs.forEach(([a,b,id,nm,em]) => L(a,b,id,nm,em,["animal","insect"],6));
+
+/* --- fish & aquatic life --- */
+const aquatic = [
+  ["fish","giant","aqua_whale","Whale","🐋"],
+  ["fish","wild","aqua_shark","Shark","🦈"],
+  ["fish","sea","aqua_dolphin","Dolphin","🐬"],
+  ["fish","electric","aqua_eel","Eel","🐟"],
+  ["fish","stone","aqua_crab","Crab","🦀"],
+  ["fish","tiny","aqua_shrimp","Shrimp","🦐"],
+  ["fish","magic","aqua_octopus","Octopus","🐙"],
+  ["fish","cold","aqua_seal","Seal","🦭"],
+  ["fish","land","aqua_turtle","Turtle","🐢"],
+  ["aqua_crab","giant","aqua_lobster","Lobster","🦞"],
+  ["fish","flower","aqua_jellyfish","Jellyfish","🪼"],
+  ["fish","sun","aqua_clownfish","Clownfish","🐠"],
+  ["fish","river_","aqua_salmon","Salmon","🐟"],
+  ["fish","sand","aqua_starfish","Starfish","⭐"],
+  ["fish","swamp","aqua_frog","Frog","🐸"],
+  ["aqua_frog","time","aqua_tadpole","Tadpole","🐸"],
+  ["lizard","swamp","aqua_crocodile","Crocodile","🐊"],
+  ["lizard","sea","aqua_sea_serpent","Sea Serpent","🐍"],
+];
+aquatic.forEach(([a,b,id,nm,em]) => L(a,b,id,nm,em,["animal","aquatic"],7));
+
+/* --- birds (aves) --- */
+const birds = [
+  ["bird","sea","ave_seagull","Seagull","🐦"],
+  ["bird","mountain_","ave_eagle","Eagle","🦅"],
+  ["bird","night","ave_owl","Owl","🦉"],
+  ["bird","cold","ave_penguin","Penguin","🐧"],
+  ["bird","flower","ave_parrot","Parrot","🦜"],
+  ["bird","water","ave_duck","Duck","🦆"],
+  ["ave_duck","giant","ave_swan","Swan","🦢"],
+  ["bird","farm","ave_chicken","Chicken","🐔"],
+  ["bird","sand","ave_flamingo","Flamingo","🦩"],
+  ["bird","giant","ave_ostrich","Ostrich","🦤"],
+  ["bird","love","ave_dove","Dove","🕊️"],
+  ["bird","death","ave_raven","Raven","🐦‍⬛"],
+  ["bird","ice","ave_falcon","Falcon","🦅"],
+  ["bird","city","ave_pigeon","Pigeon","🐦"],
+  ["bird","radiant","ave_peacock","Peacock","🦚"],
+];
+[["night","Night","🌙","concept"],["farm","Farm","🚜","structure"]].forEach(([id,nm,em,cat])=>{
+  if(!elements.has(id)){ el(id,{name:nm,emoji:em,icon:"auto:"+id,tier:6,category:cat,tags:[cat]}); }
+});
+combine("moon","time","night",null);
+combine("land","animal","farm",null);
+birds.forEach(([a,b,id,nm,em]) => L(a,b,id,nm,em,["animal","bird"],7));
+
+/* --- mammals & reptiles (terrestrial) --- */
+const mammals = [
+  ["animal","wild","mam_wolf","Wolf","🐺"],
+  ["mam_wolf","human","mam_dog","Dog","🐕"],
+  ["animal","night","mam_cat","Cat","🐈"],
+  ["animal","mountain_","mam_bear","Bear","🐻"],
+  ["mam_bear","cold","mam_polar_bear","Polar Bear","🐻‍❄️"],
+  ["animal","grass","mam_horse","Horse","🐎"],
+  ["mam_horse","wild","mam_zebra","Zebra","🦓"],
+  ["animal","farm","mam_cow","Cow","🐄"],
+  ["animal","mud","mam_pig","Pig","🐖"],
+  ["animal","mountain_","mam_goat","Goat","🐐"],
+  ["animal","cloud","mam_sheep","Sheep","🐑"],
+  ["animal","sun","mam_lion","Lion","🦁"],
+  ["mam_cat","giant","mam_tiger","Tiger","🐅"],
+  ["animal","giant","mam_elephant","Elephant","🐘"],
+  ["mam_elephant","cold","mam_mammoth","Mammoth","🦣"],
+  ["animal","tree","mam_monkey","Monkey","🐒"],
+  ["mam_monkey","giant","mam_gorilla","Gorilla","🦍"],
+  ["animal","desert_","mam_camel","Camel","🐪"],
+  ["animal","forest_","mam_deer","Deer","🦌"],
+  ["animal","tiny","mam_mouse","Mouse","🐁"],
+  ["mam_mouse","wild","mam_rat","Rat","🐀"],
+  ["animal","hole","mam_rabbit","Rabbit","🐇"],
+  ["animal","river_","mam_beaver","Beaver","🦫"],
+  ["animal","tall","mam_giraffe","Giraffe","🦒"],
+  ["animal","swamp","mam_hippo","Hippo","🦛"],
+  ["mam_horse","giant","mam_rhino","Rhino","🦏"],
+  ["mam_dog","wild","mam_fox","Fox","🦊"],
+  ["animal","forest_","mam_squirrel","Squirrel","🐿️"],
+  ["animal","flower","mam_hedgehog","Hedgehog","🦔"],
+  ["animal","snow","mam_arctic_fox","Arctic Fox","🦊"],
+  ["animal","tree","mam_koala","Koala","🐨"],
+  ["mam_koala","giant","mam_panda","Panda","🐼"],
+  ["animal","bamboo","mam_sloth","Sloth","🦥"],
+  ["animal","ocean","mam_otter","Otter","🦦"],
+  ["animal","hole","mam_mole","Mole","🐀"],
+  ["animal","night","mam_bat","Bat","🦇"],
+];
+[["hole","Hole","🕳️","concept"],["tall","Tall","📏","concept"],["ocean","Ocean","🌊","liquid"],["bamboo","Bamboo Grove","🎋","life"]].forEach(([id,nm,em,cat])=>{
+  if(!elements.has(id)){ el(id,{name:nm,emoji:em,icon:"auto:"+id,tier:6,category:cat,tags:[cat]}); }
+});
+combine("earth","tool","hole",null);
+combine("big","big","tall",null);
+combine("sea","sea","ocean",null);
+combine("flora_bamboo","forest_","bamboo",null);
+mammals.forEach(([a,b,id,nm,em]) => L(a,b,id,nm,em,["animal","mammal"],7));
+
+/* --- reptiles & amphibians --- */
+const reptiles = [
+  ["lizard","wild","rep_snake","Snake","🐍"],
+  ["lizard","sand","rep_gecko","Gecko","🦎"],
+  ["lizard","color","rep_chameleon","Chameleon","🦎"],
+  ["lizard","fire","rep_salamander","Salamander","🦎"],
+  ["lizard","stone","rep_iguana","Iguana","🦎"],
+  ["rep_snake","giant","rep_python","Python","🐍"],
+  ["rep_snake","toxic","rep_cobra","Cobra","🐍"],
+];
+if(!elements.has("color")){ el("color",{name:"Color",emoji:"🎨",icon:"auto:color",tier:5,category:"concept",tags:["concept"]}); combine("light","glass","color",null); }
+reptiles.forEach(([a,b,id,nm,em]) => L(a,b,id,nm,em,["animal","reptile"],7));
+
+/* --- humans, hominids & social roles --- */
+const people = [
+  ["human","time","ppl_child","Child","🧒"],
+  ["human","ancient","ppl_caveman","Caveman","🦴"],
+  ["human","giant","ppl_giant_human","Giant","🧗"],
+  ["human","cold","ppl_neanderthal","Neanderthal","🦴"],
+  ["human","love","ppl_family","Family","👨‍👩‍👧"],
+  ["ppl_family","time","ppl_tribe","Tribe","🪶"],
+  ["human","music","ppl_dancer","Dancer","💃"],
+  ["human","sound","ppl_singer","Singer","🎤"],
+  ["human","genre_techno","ppl_dj","DJ","🎧"],
+];
+people.forEach(([a,b,id,nm,em]) => L(a,b,id,nm,em,["human"],7));
+
+/* --- extended mythology / cryptids --- */
+const myth2 = [
+  ["magic","snow","myth_yeti","Yeti","❄️"],
+  ["magic","forest_","myth_bigfoot","Bigfoot","🦶"],
+  ["magic","river_","myth_nessie","Loch Ness Monster","🦕"],
+  ["magic","death","myth_zombie","Zombie","🧟"],
+  ["magic","ghost","myth_wraith","Wraith","👻"],
+  ["magic","sand","myth_mummy","Mummy","🧟"],
+  ["magic","moon","myth_lycan","Lycanthrope","🐺"],
+  ["magic","blood","myth_lich","Lich","💀"],
+  ["magic","storm_","myth_thunderbird","Thunderbird","🦅"],
+  ["magic","volcano_","myth_salamander_king","Fire Salamander","🦎"],
+  ["magic","ocean","myth_leviathan","Leviathan","🐉"],
+  ["magic","star","myth_pegasus","Pegasus","🦄"],
+  ["magic","cloud","myth_djinn","Djinn","🧞"],
+  ["magic","gold_","myth_leprechaun","Leprechaun","🍀"],
+  ["magic","tree","myth_ent","Ent","🌳"],
+  ["magic","stone","myth_gargoyle","Gargoyle","🗿"],
+  ["magic","ice","myth_frost_giant","Frost Giant","🧊"],
+  ["magic","sun","myth_seraph","Seraph","😇"],
+  ["magic","void","myth_shade","Shade","🌑"],
+  ["magic","dream","myth_sandman","Sandman","🌙"],
+];
+[["blood","Blood","🩸","liquid"],["void","Void","🌑","cosmic"],["dream","Dream","💭","concept"]].forEach(([id,nm,em,cat])=>{
+  if(!elements.has(id)){ el(id,{name:nm,emoji:em,icon:"auto:"+id,tier:6,category:cat,tags:[cat]}); }
+});
+combine("life","acid","blood",null);
+combine("black_hole","time","void",null);
+combine("human","night","dream",null);
+myth2.forEach(([a,b,id,nm,em]) => L(a,b,id,nm,em,["creature","mythic"],9));
+
+console.log("Lifeforms menagerie added:", lifeCount, "total:", elements.size);
+
+/* ===========================================================================
+   ORPHAN REPAIR — make every element discoverable.
+   Because combine() never overwrites an existing recipe key, several curated
+   entries (especially the new lifeforms) collided with earlier recipes and
+   ended up with NO recipe producing them. Here we deterministically assign
+   each orphan a guaranteed-unique recipe: a sensible parent + the first free
+   partner from a candidate list. Self-healing for future additions too.
+=========================================================================== */
+{
+  const baseIds = new Set([...elements.values()].filter(e => e.base).map(e => e.id));
+  // partner pools, ordered by "flavor" so assignments stay thematic
+  const PARTNERS = [
+    "water","fire","earth","air","sun","moon","star","time","wind","sea","ocean",
+    "stone","sand","snow","ice","salt","metal","gold_","blood","sound","music",
+    "love","death","ghost","magic","light","lightning","storm_","cloud","night",
+    "forest_","river_","mountain_","desert_","volcano_","swamp","grass","tree",
+    "flower","leaf","mud","dust","wheat","life","energy"
+  ].filter(id => elements.has(id));
+  // semantic parent for orphans: prefix-aware first, then category anchor
+  function parentFor(id, el) {
+    // lifeform id-prefix -> thematic biological/mythic root
+    const prefixRoots = [
+      ["aqua_", "fish"], ["mam_", "animal"], ["ave_", "bird"], ["bug_", "animal"],
+      ["rep_", "lizard"], ["flora_", "plant"], ["crop_", "tree"], ["fungi_", "plant"],
+      ["microbe_", "bacteria"], ["ppl_", "human"], ["myth_", "magic"], ["cmp_", "magic"],
+    ];
+    for (const [pre, root] of prefixRoots) {
+      if (id.startsWith(pre) && elements.has(root) && root !== id) return root;
+    }
+    const anchors = {
+      life: "animal", food: "bread", liquid: "water", gas: "air", powder: "sand",
+      solid: "stone", energy: "energy", cosmic: "star", structure: "stone",
+      machine: "metal", tool: "metal", object: "metal", concept: "life",
+    };
+    const a = anchors[el.category] || "life";
+    return elements.has(a) ? a : "life";
+  }
+  let repaired = 0;
+  // recompute produced set fresh each pass since we mutate recipes
+  function isProduced(id) { for (const r of recipes.values()) if (r === id) return true; return false; }
+  const producedSet = new Set(recipes.values());
+  for (const [id, el] of elements) {
+    if (baseIds.has(id)) continue;
+    if (producedSet.has(id)) continue;
+    // try parent + each partner until a free key appears
+    const parent = parentFor(id, el);
+    let done = false;
+    for (const p of PARTNERS) {
+      if (p === id || p === parent) continue;
+      const k = key(parent, p);
+      if (!recipes.has(k)) { combine(parent, p, id, null); producedSet.add(id); repaired++; done = true; break; }
+    }
+    if (!done) {
+      // fall back: pair parent with any other existing element to find a free slot
+      for (const other of elements.keys()) {
+        if (other === id || other === parent) continue;
+        const k = key(parent, other);
+        if (!recipes.has(k)) { combine(parent, other, id, null); producedSet.add(id); repaired++; done = true; break; }
+      }
+    }
+  }
+  console.log("Orphan repair: assigned recipes to", repaired, "previously-undiscoverable elements.");
+}
+
 /* ---------------------------------------------------------------------------
    VALIDATION + WRITE
 --------------------------------------------------------------------------- */

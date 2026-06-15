@@ -25,6 +25,7 @@
     <nav class="tabs">
       <button class="tab active" data-mode="forge">⚗️ Forge</button>
       <button class="tab" data-mode="sandbox">🧪 Sandbox</button>
+      <button class="tab" data-mode="catalog">📖 Catalog</button>
     </nav>
 
     <div class="stats">
@@ -58,12 +59,37 @@
           <button id="sb-eraser" class="tool-btn">🧽 Eraser</button>
           <label class="brush-ctl">Brush <input id="sb-brush" type="range" min="1" max="10" value="3" /></label>
           <span id="sb-current" class="sb-current"><span class="sb-cur-ic">🎨</span> Pick a material</span>
+          <button id="sb-log-toggle" class="tool-btn" title="Show/hide event log">📜 Log</button>
         </div>
         <div class="sb-wrap">
           <canvas id="sandbox-canvas"></canvas>
           <div id="sb-tooltip" class="sb-tooltip"></div>
+          <!-- live temperature / pressure / phase readout near the cursor -->
+          <div id="sb-hud" class="sb-hud">
+            <div class="hud-row"><span class="hud-k">🌡 Temp</span><b id="hud-temp">20°C</b></div>
+            <div class="hud-row"><span class="hud-k">⏲ Press.</span><b id="hud-press">1.0 atm</b></div>
+            <div class="hud-row"><span class="hud-k">⌬ Phase</span><b id="hud-phase">—</b></div>
+            <div id="hud-el" class="hud-el">—</div>
+          </div>
+          <!-- reaction / phase-change event log -->
+          <div id="sb-log" class="sb-log">
+            <div class="log-head"><span>📜 Event log</span><button id="sb-log-clear" title="Clear log">✕</button></div>
+            <ul id="sb-log-list" class="log-list"><li class="log-empty">Reactions and phase changes will appear here.</li></ul>
+          </div>
         </div>
         <div id="sb-quick" class="sb-quick"></div>
+      </div>
+
+      <!-- CATALOG -->
+      <div id="catalog-view" class="view hidden">
+        <div class="board-tools">
+          <input id="cat-search" type="search" class="cat-search" placeholder="Search discovered…" autocomplete="off" />
+          <span class="cat-overall">Collection <b id="cat-overall-pct">0%</b> · <span id="cat-overall-found">0</span>/<span id="cat-overall-total">0</span></span>
+        </div>
+        <div id="catalog-body" class="catalog-body">
+          <aside id="cat-rail" class="cat-rail"></aside>
+          <div id="cat-detail" class="cat-detail"></div>
+        </div>
       </div>
     </section>
 
