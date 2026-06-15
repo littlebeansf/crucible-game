@@ -385,7 +385,7 @@ const SVGNS = "http://www.w3.org/2000/svg";
 let linkSvg = null;
 function clearConnections() {
   if (linkSvg) linkSvg.innerHTML = "";
-  for (const it of boardItems) it.node.classList.remove("target", "compatible");
+  for (const it of boardItems) it.node.classList.remove("target", "compatible", "known");
 }
 // While dragging `rec`, draw a dotted line to every item it can actually
 // combine with, and mark the nearest in-range valid partner as the active target.
@@ -397,14 +397,16 @@ function updateConnections(rec) {
   for (const other of boardItems) {
     if (other.uid === rec.uid) continue;
     const hit = state.canCombine(rec.id, other.id);
+    const known = !!hit && !hit.isNew; // result already discovered
     other.node.classList.toggle("compatible", !!hit);
+    other.node.classList.toggle("known", known);
     other.node.classList.toggle("target", other === target);
     if (!hit) continue;
     const B = itemCenter(other);
     const line = document.createElementNS(SVGNS, "line");
     line.setAttribute("x1", A.cx); line.setAttribute("y1", A.cy);
     line.setAttribute("x2", B.cx); line.setAttribute("y2", B.cy);
-    line.setAttribute("class", "link" + (other === target ? " active" : ""));
+    line.setAttribute("class", "link" + (known ? " known" : "") + (other === target ? " active" : ""));
     linkSvg.appendChild(line);
   }
 }

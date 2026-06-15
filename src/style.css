@@ -101,6 +101,9 @@ body {
 .board-links .link { stroke: rgba(95,214,138,.5); stroke-width: 2; stroke-linecap: round;
   stroke-dasharray: 2 9; animation: link-flow 0.6s linear infinite; }
 .board-links .link.active { stroke: var(--accent); stroke-width: 3; stroke-dasharray: 3 8; }
+/* result already discovered: muted cool tone instead of "new" green */
+.board-links .link.known { stroke: rgba(118,140,168,.5); }
+.board-links .link.known.active { stroke: var(--accent2); }
 @keyframes link-flow { to { stroke-dashoffset: -11; } }
 
 .bitem { position: absolute; width: 72px; display: flex; flex-direction: column; align-items: center; gap: 3px;
@@ -112,7 +115,10 @@ body {
 .bitem:hover .bitem-ic { transform: translateY(-2px); }
 /* a compatible (recipe-forming) item gets a soft green ring; the active snap target glows brighter */
 .bitem.compatible .bitem-ic { box-shadow: 0 0 0 2px rgba(95,214,138,.65), var(--shadow); }
+/* compatible but result already discovered: muted cool ring (not "new-discovery" green) */
+.bitem.compatible.known .bitem-ic { box-shadow: 0 0 0 2px rgba(118,140,168,.6), var(--shadow); }
 .bitem.target .bitem-ic { box-shadow: 0 0 0 3px var(--accent), 0 0 18px rgba(255,138,30,.5), var(--shadow); transform: scale(1.08); }
+.bitem.target.known .bitem-ic { box-shadow: 0 0 0 3px var(--accent2), 0 0 18px rgba(76,195,255,.45), var(--shadow); transform: scale(1.08); }
 .bitem-name { font-size: 11px; font-weight: 600; color: var(--text); background: rgba(0,0,0,.55); padding: 2px 8px; border-radius: 8px;
   max-width: 90px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; backdrop-filter: blur(2px); }
 
