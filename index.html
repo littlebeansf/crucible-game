@@ -25,6 +25,7 @@
     <nav class="tabs">
       <button class="tab active" data-mode="forge">⚗️ Forge</button>
       <button class="tab" data-mode="sandbox">🧪 Sandbox</button>
+      <button class="tab" data-mode="runs">🜂 Runs</button>
       <button class="tab" data-mode="catalog">📖 Catalog</button>
     </nav>
 
@@ -82,6 +83,87 @@
         </div>
         <div id="sb-cat-tabs" class="sb-cat-tabs"></div>
         <div id="sb-quick" class="sb-quick"></div>
+      </div>
+
+      <!-- TRANSMUTATION RUNS -->
+      <div id="runs-view" class="view hidden">
+        <!-- intro / start screen -->
+        <div id="runs-intro" class="runs-intro">
+          <div class="runs-intro-card">
+            <div class="runs-glyph">🜂</div>
+            <h2>Transmutation Runs</h2>
+            <p class="runs-tag">A roguelike crafting gauntlet.</p>
+            <ul class="runs-rules">
+              <li><b>Reach the target</b> element before your <b>Energy</b> runs out.</li>
+              <li>Every combine costs energy. A <b>new</b> result refunds energy, scores points and grows your <b>combo</b>.</li>
+              <li>A dead end or a repeat <b>drains</b> energy and breaks the combo.</li>
+              <li>Clear a stage to draft a <b>Relic</b> that bends the rules — then face a harder target.</li>
+            </ul>
+            <div class="runs-best">Best score <b id="runs-best">0</b></div>
+            <button id="runs-start" class="runs-btn primary">Begin a run →</button>
+          </div>
+        </div>
+
+        <!-- active run -->
+        <div id="runs-play" class="runs-play hidden">
+          <div class="runs-hud">
+            <div class="rh-item"><span>Stage</span><b id="rh-stage">1</b></div>
+            <div class="rh-item"><span>Score</span><b id="rh-score">0</b></div>
+            <div class="rh-item rh-combo"><span>Combo</span><b id="rh-combo">×1.00</b></div>
+            <div class="rh-energy">
+              <div class="rh-energy-top"><span>Energy</span><b id="rh-energy-val">100</b></div>
+              <div class="rh-bar"><div id="rh-bar-fill" class="rh-bar-fill"></div></div>
+            </div>
+            <button id="runs-abandon" class="runs-btn runs-ghost">Abandon</button>
+          </div>
+
+          <div class="runs-target" id="runs-target">
+            <span class="rt-label">🎯 Target</span>
+            <span class="rt-ic" id="rt-ic"></span>
+            <span class="rt-name" id="rt-name">—</span>
+            <span class="rt-steps" id="rt-steps"></span>
+          </div>
+
+          <div class="runs-relics" id="runs-relics"></div>
+
+          <div class="runs-board">
+            <div class="runs-hand-head">
+              <span>Your hand · <b id="runs-hand-count">0</b></span>
+              <span class="runs-pick" id="runs-pick">Pick two elements to combine</span>
+            </div>
+            <div id="runs-hand" class="runs-hand"></div>
+          </div>
+
+          <div class="runs-log-wrap">
+            <div class="runs-log-head">📜 Run log</div>
+            <ul id="runs-log" class="runs-log"></ul>
+          </div>
+        </div>
+
+        <!-- relic draft overlay -->
+        <div id="relic-overlay" class="relic-overlay hidden">
+          <div class="relic-card-wrap">
+            <h3>Stage cleared — draft a Relic</h3>
+            <div id="relic-choices" class="relic-choices"></div>
+            <button id="relic-skip" class="runs-btn runs-ghost">Skip — keep it lean</button>
+          </div>
+        </div>
+
+        <!-- game-over overlay -->
+        <div id="runs-over" class="runs-over hidden">
+          <div class="runs-over-card">
+            <div class="ro-glyph" id="ro-glyph">💥</div>
+            <h3 id="ro-title">Run over</h3>
+            <div class="ro-stats">
+              <div><span>Score</span><b id="ro-score">0</b></div>
+              <div><span>Best combo</span><b id="ro-combo">×1</b></div>
+              <div><span>Stage</span><b id="ro-stage">1</b></div>
+              <div><span>Discoveries</span><b id="ro-disc">0</b></div>
+            </div>
+            <div id="ro-best" class="ro-best"></div>
+            <button id="runs-again" class="runs-btn primary">Run again →</button>
+          </div>
+        </div>
       </div>
 
       <!-- CATALOG -->

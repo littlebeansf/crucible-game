@@ -6,14 +6,15 @@
 
 import { GameState } from "./state.js";
 import { Sandbox } from "./sandbox/engine.js";
+import { RunEngine, RELICS } from "./runs.js";
 import { iconHTML, emojiFor, pixelColor } from "./icons.js";
 import { storage } from "./storage.js";
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 
-let DB, state, sandbox;
-let mode = "forge";              // 'forge' | 'sandbox'
+let DB, state, sandbox, runs;
+let mode = "forge";              // 'forge' | 'sandbox' | 'runs' | 'catalog'
 let drawerSort = "recent";
 let drawerQuery = "";
 let drawerPhysOnly = false;
@@ -27,10 +28,14 @@ async function boot() {
   state = new GameState(DB);
   window.__crucible = { state, DB }; // debug handle
 
+  runs = new RunEngine(state);
+  window.__crucible.runs = runs;
+
   setupTabs();
   setupDrawer();
   setupForge();
   setupSandbox();
+  setupRuns();
   setupCatalog();
   setupTopbar();
   renderDrawer();
@@ -61,13 +66,15 @@ function switchMode(m) {
   $$(".tab").forEach(t => t.classList.toggle("active", t.dataset.mode === m));
   $("#forge-view").classList.toggle("hidden", m !== "forge");
   $("#sandbox-view").classList.toggle("hidden", m !== "sandbox");
+  $("#runs-view").classList.toggle("hidden", m !== "runs");
   $("#catalog-view").classList.toggle("hidden", m !== "catalog");
-  // the element drawer is only useful in Forge/Sandbox; hide it in Catalog
-  document.body.classList.toggle("catalog-mode", m === "catalog");
+  // the element drawer is only useful in Forge/Sandbox; hide it in Runs & Catalog
+  document.body.classList.toggle("catalog-mode", m === "catalog" || m === "runs");
   drawerPhysOnly = (m === "sandbox");
   $("#phys-filter").classList.toggle("active", drawerPhysOnly);
   renderDrawer();
   if (m === "sandbox") { renderQuickBar(); sandbox.resize(); }
+  if (m === "runs") renderRuns();
   if (m === "catalog") renderCatalog();
 }
 
@@ -793,6 +800,194 @@ function startTouchDrag(e, id) {
   move(e);
   document.addEventListener("pointermove", move);
   document.addEventListener("pointerup", up);
+}
+
+/* ---------------------------------------------------------------------------
+   TRANSMUTATION RUNS (roguelike mode)
+--------------------------------------------------------------------------- */
+let runSelA = null; // first selected hand element id (awaiting a partner)
+const RUN_RELIC_BY_ID = Object.fromEntries(RELICS.map(r => [r.id, r]));
+
+function setupRuns() {
+  $("#runs-start").addEventListener("click", startRun);
+  $("#runs-again").addEventListener("click", startRun);
+  $("#runs-abandon").addEventListener("click", () => {
+    if (runs.run && !runs.run.over && !confirm("Abandon this run? Your score won't be banked unless it beats your best.")) return;
+    runs.abandon();
+    renderRuns();
+  });
+  $("#relic-skip").addEventListener("click", () => runs.skipRelic());
+
+  // react to engine events
+  runs.on(evt => {
+    switch (evt.type) {
+      case "start":       runSelA = null; showRunScreen("play"); renderRunFull(); break;
+      case "combine":     renderRunFull(); flashCombine(evt); break;
+      case "stage-clear": renderRunHud(); break;
+      case "relic-offer": showRelicDraft(evt.choices); break;
+      case "stage-next":  $("#relic-overlay").classList.add("hidden"); runSelA = null; renderRunFull(); break;
+      case "over":        showRunOver(evt.won); break;
+      case "abandon":     showRunScreen("intro"); break;
+    }
+  });
+}
+
+function startRun() {
+  $("#runs-over").classList.add("hidden");
+  $("#relic-overlay").classList.add("hidden");
+  runs.start();
+}
+
+// Top-level: choose which sub-screen of the Runs view is visible.
+function showRunScreen(which) {
+  $("#runs-intro").classList.toggle("hidden", which !== "intro");
+  $("#runs-play").classList.toggle("hidden", which !== "play");
+  if (which === "intro") { $("#runs-over").classList.add("hidden"); $("#relic-overlay").classList.add("hidden"); }
+}
+
+// Entry point when the tab is opened.
+function renderRuns() {
+  $("#runs-best").textContent = runs.best.toLocaleString();
+  if (runs.run && !runs.run.over) { showRunScreen("play"); renderRunFull(); }
+  else if (runs.run && runs.run.over) { showRunScreen("play"); renderRunFull(); showRunOver(runs.run.won); }
+  else { showRunScreen("intro"); }
+}
+
+function renderRunFull() { renderRunHud(); renderRunTarget(); renderRunRelics(); renderRunHand(); renderRunLog(); }
+
+function renderRunHud() {
+  const r = runs.run; if (!r) return;
+  $("#rh-stage").textContent = r.stage;
+  $("#rh-score").textContent = r.score.toLocaleString();
+  $("#rh-combo").textContent = "\u00d7" + r.combo.toFixed(2);
+  $("#rh-combo").classList.toggle("hot", r.combo >= 2);
+  $("#rh-energy-val").textContent = Math.max(0, Math.round(r.energy));
+  const pct = Math.max(0, Math.min(100, (r.energy / r.maxEnergy) * 100));
+  const fill = $("#rh-bar-fill");
+  fill.style.width = pct + "%";
+  fill.classList.toggle("low", pct <= 25);
+}
+
+function renderRunTarget() {
+  const r = runs.run; if (!r || !r.target) return;
+  const el = state.el(r.target.id);
+  $("#rt-ic").innerHTML = iconHTML(el, 30);
+  $("#rt-name").textContent = el.name;
+  let steps = `~${r.target.steps} step${r.target.steps === 1 ? "" : "s"} away`;
+  if (r.target.revealed) steps += ` \u00b7 hint: needs ${state.el(r.target.revealed)?.name || r.target.revealed}`;
+  $("#rt-steps").textContent = steps;
+}
+
+function renderRunRelics() {
+  const r = runs.run; if (!r) return;
+  const wrap = $("#runs-relics");
+  wrap.innerHTML = "";
+  for (const id of r.relics) {
+    const relic = RUN_RELIC_BY_ID[id];
+    if (!relic) continue;
+    const chip = document.createElement("span");
+    chip.className = "relic-chip";
+    chip.innerHTML = `<span>${relic.emoji}</span> ${relic.name}`;
+    chip.title = relic.desc;
+    wrap.appendChild(chip);
+  }
+}
+
+function renderRunHand() {
+  const r = runs.run; if (!r) return;
+  $("#runs-hand-count").textContent = r.hand.size;
+  const wrap = $("#runs-hand");
+  wrap.innerHTML = "";
+  const frag = document.createDocumentFragment();
+  // newest last so fresh discoveries appear at the end and get the "new" glow
+  for (const id of r.handOrder) {
+    const el = state.el(id); if (!el) continue;
+    const btn = document.createElement("button");
+    btn.className = "rhand";
+    btn.dataset.id = id;
+    if (id === runSelA) btn.classList.add("sel");
+    if (r.newThisRun.has(id)) btn.classList.add("fresh");
+    btn.innerHTML = `<span class="rhand-ic">${iconHTML(el, 28)}</span><span class="rhand-n">${el.name}</span>`;
+    btn.addEventListener("click", () => onHandClick(id));
+    frag.appendChild(btn);
+  }
+  wrap.appendChild(frag);
+  // pick prompt
+  const pick = $("#runs-pick");
+  if (runSelA) {
+    const a = state.el(runSelA);
+    pick.innerHTML = `Selected <b>${a.name}</b> \u2014 pick a partner, double-click it to self-combine, or click once to cancel`;
+  } else {
+    pick.textContent = "Pick two elements to combine";
+  }
+}
+
+let runSelTime = 0;
+function onHandClick(id) {
+  const r = runs.run; if (!r || r.over) return;
+  if (r.relicChoices) return; // waiting on relic draft
+  if (!runSelA) { runSelA = id; runSelTime = Date.now(); renderRunHand(); return; }
+  if (runSelA === id) {
+    // rapid second click on the same tile = self-combine; slow click = cancel
+    if (Date.now() - runSelTime < 400) {
+      runSelA = null;
+      runs.combine(id, id); // self-combine (e.g. water + water)
+      return;
+    }
+    runSelA = null; renderRunHand(); return; // cancel
+  }
+  const a = runSelA, b = id;
+  runSelA = null;
+  runs.combine(a, b); // emits 'combine' -> renderRunFull
+}
+
+function renderRunLog() {
+  const r = runs.run; if (!r) return;
+  const ul = $("#runs-log");
+  ul.innerHTML = "";
+  if (!r.log.length) { ul.innerHTML = `<li class="rl-empty">Your combines will appear here.</li>`; return; }
+  for (const line of r.log) {
+    const li = document.createElement("li");
+    li.className = line.startsWith("\u2713") ? "rl-hit" : line.startsWith("\uD83C\uDFAF") ? "rl-goal" : line.startsWith("\u2726") ? "rl-relic" : "rl-miss";
+    li.textContent = line;
+    ul.appendChild(li);
+  }
+}
+
+function flashCombine(evt) {
+  if (evt.ok && evt.isNew) {
+    toast(`+${evt.gained} \u00b7 ${evt.el.name}`, "\u2728");
+  } else if (!evt.ok && evt.drain) {
+    // subtle shake on the energy bar
+    const bar = $("#rh-bar-fill"); bar.classList.remove("shake"); void bar.offsetWidth; bar.classList.add("shake");
+  }
+}
+
+function showRelicDraft(choices) {
+  const wrap = $("#relic-choices");
+  wrap.innerHTML = "";
+  for (const relic of choices) {
+    const card = document.createElement("button");
+    card.className = "relic-card";
+    card.innerHTML = `<div class="relic-emoji">${relic.emoji}</div><div class="relic-name">${relic.name}</div><div class="relic-desc">${relic.desc}</div>`;
+    card.addEventListener("click", () => runs.chooseRelic(relic.id));
+    wrap.appendChild(card);
+  }
+  $("#relic-overlay").classList.remove("hidden");
+}
+
+function showRunOver(won) {
+  const r = runs.run; if (!r) return;
+  $("#ro-glyph").textContent = won ? "\uD83C\uDFC6" : "\uD83D\uDCA5";
+  $("#ro-title").textContent = won ? "Transmutation complete!" : "Out of energy";
+  $("#ro-score").textContent = r.score.toLocaleString();
+  $("#ro-combo").textContent = "\u00d7" + r.bestCombo.toFixed(2);
+  $("#ro-stage").textContent = r.stage;
+  $("#ro-disc").textContent = r.newThisRun.size;
+  const isBest = r.score >= runs.best && r.score > 0;
+  $("#ro-best").innerHTML = isBest ? `\uD83C\uDF1F New best score!` : `Best: <b>${runs.best.toLocaleString()}</b>`;
+  $("#runs-best").textContent = runs.best.toLocaleString();
+  $("#runs-over").classList.remove("hidden");
 }
 
 /* ---------------------------------------------------------------------------
