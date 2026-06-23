@@ -49,6 +49,49 @@ export class GameState {
   isDiscovered(id) { return this.discovered.has(id); }
   el(id) { return this.elements[id]; }
 
+  // ---- Save import / export (share progress between devices/browsers) ----
+  // Serialise the current progress to a portable JSON string.
+  exportSave() {
+    return JSON.stringify({
+      app: "crucible",
+      version: 1,
+      discovered: [...this.discovered],
+      recent: this.recentlyDiscovered.slice(0, 500),
+      stats: { found: this.discovered.size, total: Object.keys(this.elements).length },
+      ts: Date.now(),
+    }, null, 2);
+  }
+
+  // Load progress from an exported JSON string.
+  // mode "replace" (default) overwrites current progress; "merge" adds to it.
+  // Returns { ok, added, total } or { ok:false, error }.
+  importSave(text, mode = "replace") {
+    let data;
+    try { data = JSON.parse(text); } catch { return { ok: false, error: "That file isn't valid JSON." }; }
+    const list = data && Array.isArray(data.discovered) ? data.discovered : null;
+    if (!list) return { ok: false, error: "No discoveries found in that file." };
+    const valid = list.filter(id => this.elements[id]);
+    if (!valid.length) return { ok: false, error: "None of the elements in that file match this version of the game." };
+    const before = this.discovered.size;
+    if (mode === "replace") {
+      this.discovered = new Set(BASE_DISCOVERED);
+      this.recentlyDiscovered = [...BASE_DISCOVERED];
+    }
+    for (const id of valid) this.discovered.add(id);
+    // rebuild recent order: imported recent first (valid + discovered), then the rest
+    const importedRecent = (Array.isArray(data.recent) ? data.recent : valid)
+      .filter(id => this.elements[id] && this.discovered.has(id));
+    const seen = new Set();
+    const recent = [];
+    for (const id of importedRecent) if (!seen.has(id)) { seen.add(id); recent.push(id); }
+    for (const id of this.recentlyDiscovered) if (!seen.has(id) && this.discovered.has(id)) { seen.add(id); recent.push(id); }
+    for (const id of this.discovered) if (!seen.has(id)) { seen.add(id); recent.push(id); }
+    this.recentlyDiscovered = recent;
+    this.save();
+    this.emit({ type: "import" });
+    return { ok: true, added: this.discovered.size - before, total: this.discovered.size };
+  }
+
   key(a, b) { return [a, b].sort().join("|"); }
 
   // does a recipe exist for this pair? returns { result, isNew } | null (no side effects)

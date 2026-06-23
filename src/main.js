@@ -45,7 +45,7 @@ async function boot() {
       if (state.el(evt.id)?.phys) renderQuickBar();
     }
     if (evt.type === "discover" && mode === "catalog") renderCatalog();
-    if (evt.type === "reset") { clearForge(); renderDrawer(); renderQuickBar(); updateStats(); if (mode === "catalog") renderCatalog(); }
+    if (evt.type === "reset" || evt.type === "import") { clearForge(); renderDrawer(); renderQuickBar(); updateStats(); if (mode === "catalog") renderCatalog(); }
     updateStats();
   });
 }
@@ -301,6 +301,45 @@ function setupForge() {
   board.addEventListener("contextmenu", e => e.preventDefault()); // no native menu on the board
   $("#clear-board").addEventListener("click", clearForge);
   $("#hint-btn").addEventListener("click", showHint);
+  $("#export-btn").addEventListener("click", exportProgress);
+  $("#import-btn").addEventListener("click", () => $("#import-file").click());
+  $("#import-file").addEventListener("change", importProgress);
+}
+
+/* ---------------------------------------------------------------------------
+   IMPORT / EXPORT — share Forge progress between devices/browsers
+--------------------------------------------------------------------------- */
+function exportProgress() {
+  const json = state.exportSave();
+  const stamp = new Date().toISOString().slice(0, 10);
+  const blob = new Blob([json], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `crucible-save-${stamp}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  toast(`Exported ${state.discovered.size} discoveries`, "⬆️");
+}
+
+function importProgress(e) {
+  const file = e.target.files && e.target.files[0];
+  e.target.value = ""; // allow re-importing the same file later
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const replace = confirm(
+      "Import progress?\n\nOK = REPLACE your current discoveries with the file.\nCancel = MERGE the file into what you already have."
+    );
+    const res = state.importSave(String(reader.result), replace ? "replace" : "merge");
+    if (!res.ok) { toast(res.error || "Couldn't import that file.", "⛔"); return; }
+    const verb = replace ? "Loaded" : "Merged";
+    toast(`${verb} save · ${res.total} discoveries (+${res.added})`, "⬇️");
+  };
+  reader.onerror = () => toast("Couldn't read that file.", "⛔");
+  reader.readAsText(file);
 }
 
 function spawnOnBoard(id, x, y) {
