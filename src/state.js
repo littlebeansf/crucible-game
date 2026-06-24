@@ -15,9 +15,30 @@ export class GameState {
     this.firstPair = db.firstPair || {};
     this.discovered = new Set();        // ids
     this.recentlyDiscovered = [];       // ordered ids (newest first)
+    this.unlockedAchievements = new Set(); // achievement ids
     this.listeners = new Set();
+    this.buildRecipeIndex();
     this.load();
   }
+
+  // Build reverse indexes once: which pairs PRODUCE an id, and which recipes
+  // an id is an INGREDIENT in. Powers the catalog's combination view.
+  buildRecipeIndex() {
+    this._producedBy = {}; // resultId -> [[a,b], ...]
+    this._ingredientOf = {}; // id -> [{ a, b, result }, ...]
+    for (const k in this.recipes) {
+      const result = this.recipes[k];
+      const [a, b] = k.split("|");
+      (this._producedBy[result] ||= []).push([a, b]);
+      (this._ingredientOf[a] ||= []).push({ a, b, result });
+      if (b !== a) (this._ingredientOf[b] ||= []).push({ a, b, result });
+    }
+  }
+
+  // Ingredient pairs that produce `id` (all of them, even undiscovered).
+  recipesFor(id) { return this._producedBy[id] || []; }
+  // Recipes where `id` is an ingredient.
+  usedIn(id) { return this._ingredientOf[id] || []; }
 
   on(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
   emit(evt) { for (const fn of this.listeners) fn(evt); }
@@ -25,16 +46,23 @@ export class GameState {
   load() {
     let saved = null;
     try { saved = JSON.parse(storage.get(SAVE_KEY) || "null"); } catch {}
+    // Save migration: keep every previously-unlocked id that still exists in the
+    // new element set (stable snake_case ids carry over), then ensure the four
+    // base elements are always present. Unknown/removed ids are simply dropped.
     const ids = (saved && Array.isArray(saved.discovered)) ? saved.discovered : BASE_DISCOVERED;
     this.discovered = new Set(ids.filter(id => this.elements[id]));
     for (const b of BASE_DISCOVERED) this.discovered.add(b);
     this.recentlyDiscovered = (saved && saved.recent ? saved.recent : [...this.discovered]).filter(id=>this.elements[id]);
+    // Achievements persist across the overhaul too.
+    const ach = (saved && Array.isArray(saved.achievements)) ? saved.achievements : [];
+    this.unlockedAchievements = new Set(ach);
   }
 
   save() {
     storage.set(SAVE_KEY, JSON.stringify({
       discovered: [...this.discovered],
       recent: this.recentlyDiscovered.slice(0, 200),
+      achievements: [...this.unlockedAchievements],
       ts: Date.now(),
     }));
   }
@@ -42,8 +70,18 @@ export class GameState {
   reset() {
     this.discovered = new Set(BASE_DISCOVERED);
     this.recentlyDiscovered = [...BASE_DISCOVERED];
+    this.unlockedAchievements = new Set();
     this.save();
     this.emit({ type: "reset" });
+  }
+
+  // ---- Achievements persistence ----
+  hasAchievement(id) { return this.unlockedAchievements.has(id); }
+  unlockAchievement(id) {
+    if (this.unlockedAchievements.has(id)) return false;
+    this.unlockedAchievements.add(id);
+    this.save();
+    return true;
   }
 
   isDiscovered(id) { return this.discovered.has(id); }
@@ -57,6 +95,7 @@ export class GameState {
       version: 1,
       discovered: [...this.discovered],
       recent: this.recentlyDiscovered.slice(0, 500),
+      achievements: [...this.unlockedAchievements],
       stats: { found: this.discovered.size, total: Object.keys(this.elements).length },
       ts: Date.now(),
     }, null, 2);
@@ -78,6 +117,8 @@ export class GameState {
       this.recentlyDiscovered = [...BASE_DISCOVERED];
     }
     for (const id of valid) this.discovered.add(id);
+    // merge any achievements carried in the imported save
+    if (Array.isArray(data.achievements)) for (const a of data.achievements) this.unlockedAchievements.add(a);
     // rebuild recent order: imported recent first (valid + discovered), then the rest
     const importedRecent = (Array.isArray(data.recent) ? data.recent : valid)
       .filter(id => this.elements[id] && this.discovered.has(id));
@@ -191,10 +232,11 @@ export class GameState {
     const p = el && el.phys;
     if (!p) return null;
     const info = {};
-    if (p.freezeTo) info.freeze = { to: p.freezeTo, at: 0 };
+    // Use REAL per-element thresholds when present; fall back to defaults.
+    if (p.freezeTo) info.freeze = { to: p.freezeTo, at: p.freezeAt ?? 0 };
     if (p.meltTo) info.melt = { to: p.meltTo, at: p.meltAt ?? 5 };
-    if (p.boilTo) info.boil = { to: p.boilTo, at: 100 };
-    if (p.condenseTo) info.condense = { to: p.condenseTo, at: 95 };
+    if (p.boilTo) info.boil = { to: p.boilTo, at: p.boilAt ?? 100 };
+    if (p.condenseTo) info.condense = { to: p.condenseTo, at: (p.boilAt != null ? p.boilAt - 5 : 95) };
     if (p.coolTo) info.cool = { to: p.coolTo, at: 600 };
     if (p.flammable) info.flammable = true;
     if (p.conductive) info.conductive = true;
@@ -202,6 +244,11 @@ export class GameState {
     if (p.soluble) info.soluble = true;
     info.state = p.state;
     info.density = p.density;
+    if (p.meltAt != null) info.meltAt = p.meltAt;
+    if (p.boilAt != null) info.boilAt = p.boilAt;
+    if (p.symbol) info.symbol = p.symbol;
+    if (p.formula) info.formula = p.formula;
+    if (p.color) info.color = p.color;
     if (p.temp != null) info.temp = p.temp;
     return info;
   }

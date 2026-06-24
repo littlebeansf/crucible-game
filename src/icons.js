@@ -20,24 +20,28 @@ export function hash(str) {
 
 // ---- category palettes (background tint + accent) ----
 export const CATEGORY_COLORS = {
-  liquid:   ["#0b3d5c", "#4cc3ff"],
-  gas:      ["#2b3a4a", "#bfe3ff"],
-  energy:   ["#3a1500", "#ff9d2e"],
-  powder:   ["#3a2c18", "#e0b873"],
-  solid:    ["#2a2d33", "#aab4c0"],
-  life:     ["#0f3520", "#5fd68a"],
-  food:     ["#3a2410", "#f2b35c"],
-  concept:  ["#2a1840", "#c08bff"],
-  cosmic:   ["#0a0a2a", "#9db4ff"],
-  structure:["#332a1c", "#d8b06a"],
-  machine:  ["#1c2730", "#7fd0e0"],
-  tool:     ["#2c2417", "#d6c08a"],
-  object:   ["#262a33", "#9fb0d0"],
-  matter:   ["#222831", "#a9b4c2"],
+  liquid:     ["#0b3d5c", "#4cc3ff"],
+  gas:        ["#2b3a4a", "#bfe3ff"],
+  energy:     ["#3a1500", "#ff9d2e"],
+  earth:      ["#3a2c18", "#c9a06a"],
+  weather:    ["#1d3344", "#8fd4ff"],
+  chemical:   ["#2a1840", "#c08bff"],
+  metal:      ["#2a2d33", "#c8d0dc"],
+  geology:    ["#332a1c", "#caa46a"],
+  materials:  ["#262a33", "#9fb0d0"],
+  life:       ["#0f3520", "#5fd68a"],
+  technology: ["#1c2730", "#7fd0e0"],
+  physics:    ["#102a2a", "#5fe0c8"],
+  space:      ["#0a0a2a", "#9db4ff"],
+  meme:       ["#3a0f2a", "#ff77c8"],
+  // legacy fallbacks (kept so any old saved/edge ids still tint)
+  powder:     ["#3a2c18", "#e0b873"],
+  solid:      ["#2a2d33", "#aab4c0"],
+  matter:     ["#222831", "#a9b4c2"],
 };
 
 function pal(category) {
-  return CATEGORY_COLORS[category] || CATEGORY_COLORS.matter;
+  return CATEGORY_COLORS[category] || CATEGORY_COLORS.materials;
 }
 
 // Per-element accent hue derived from category accent + a small id-based shift,
@@ -54,9 +58,10 @@ export function accentColor(el) {
    PUBLIC: get the emoji glyph for an element (with a sane fallback)
 --------------------------------------------------------------------------- */
 const FALLBACK_BY_CATEGORY = {
-  liquid: "💧", gas: "💨", energy: "⚡", powder: "🟤", solid: "⬜",
-  life: "🌱", food: "🍞", concept: "✨", cosmic: "🌌", structure: "🏛️",
-  machine: "⚙️", tool: "🔧", object: "📦", matter: "🔶",
+  liquid: "💧", gas: "💨", energy: "⚡", earth: "🟤", weather: "🌦️",
+  chemical: "⚗️", metal: "🔩", geology: "🪨", materials: "📦", life: "🌱",
+  technology: "⚙️", physics: "🔬", space: "🌌", meme: "😎",
+  powder: "🟤", solid: "⬜", matter: "🔶",
 };
 
 export function emojiFor(el) {

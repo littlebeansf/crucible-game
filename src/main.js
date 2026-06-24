@@ -9,11 +9,13 @@ import { Sandbox } from "./sandbox/engine.js";
 import { RunEngine, RELICS } from "./runs.js";
 import { iconHTML, emojiFor, pixelColor } from "./icons.js";
 import { storage } from "./storage.js";
+import { Achievements, TIER_LABEL } from "./achievements.js";
+import { setupSettings } from "./settings.js";
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 
-let DB, state, sandbox, runs;
+let DB, state, sandbox, runs, achievements;
 let mode = "forge";              // 'forge' | 'sandbox' | 'runs' | 'catalog'
 let drawerSort = "recent";
 let drawerQuery = "";
@@ -31,6 +33,10 @@ async function boot() {
   runs = new RunEngine(state);
   window.__crucible.runs = runs;
 
+  achievements = new Achievements(state, runs);
+  achievements.onUnlock = onAchievementUnlock;
+  window.__crucible.achievements = achievements;
+
   setupTabs();
   setupDrawer();
   setupForge();
@@ -38,19 +44,29 @@ async function boot() {
   setupRuns();
   setupCatalog();
   setupTopbar();
+  setupAchievementsPanel();
+  setupSettings(storage);
   renderDrawer();
   updateStats();
 
   $("#loading").classList.add("hidden");
   maybeShowWelcome();
+  // Evaluate achievements once on boot so carried-over progress is reflected.
+  achievements.evaluate();
   state.on(evt => {
     if (evt.type === "discover") {
       onDiscover(evt);
       // a newly discovered physical material should appear in the sandbox bar
       if (state.el(evt.id)?.phys) renderQuickBar();
+      achievements.evaluate();
     }
     if (evt.type === "discover" && mode === "catalog") renderCatalog();
-    if (evt.type === "reset" || evt.type === "import") { clearForge(); renderDrawer(); renderQuickBar(); updateStats(); if (mode === "catalog") renderCatalog(); }
+    if (evt.type === "reset" || evt.type === "import") {
+      clearForge(); renderDrawer(); renderQuickBar(); updateStats();
+      if (mode === "catalog") renderCatalog();
+      achievements.evaluate();
+      renderAchievementsPanel();
+    }
     updateStats();
   });
 }
@@ -97,20 +113,20 @@ function setupDrawer() {
 
 // Category display metadata: label, emoji badge, and a stable ordering.
 const CATEGORY_META = {
-  liquid:    { label: "Liquids",     emoji: "\uD83D\uDCA7", order: 1 },
-  gas:       { label: "Gases",       emoji: "\uD83D\uDCA8", order: 2 },
-  energy:    { label: "Energy",      emoji: "\u26A1",       order: 3 },
-  powder:    { label: "Powders",     emoji: "\uD83C\uDFD6\uFE0F", order: 4 },
-  solid:     { label: "Solids",      emoji: "\uD83E\uDEA8", order: 5 },
-  life:      { label: "Life",        emoji: "\uD83C\uDF31", order: 6 },
-  food:      { label: "Food",        emoji: "\uD83C\uDF5E", order: 7 },
-  structure: { label: "Structures",  emoji: "\uD83C\uDFDB\uFE0F", order: 8 },
-  machine:   { label: "Machines",    emoji: "\u2699\uFE0F", order: 9 },
-  tool:      { label: "Tools",       emoji: "\uD83D\uDD27", order: 10 },
-  object:    { label: "Objects",     emoji: "\uD83D\uDCE6", order: 11 },
-  cosmic:    { label: "Cosmic",      emoji: "\uD83C\uDF0C", order: 12 },
-  concept:   { label: "Concepts",    emoji: "\u2728",       order: 13 },
-  matter:    { label: "Matter",      emoji: "\uD83D\uDD36", order: 14 },
+  liquid:     { label: "Liquids",    emoji: "\uD83D\uDCA7", order: 1 },
+  gas:        { label: "Gases",      emoji: "\uD83D\uDCA8", order: 2 },
+  energy:     { label: "Energy",     emoji: "\u26A1",       order: 3 },
+  weather:    { label: "Weather",    emoji: "\uD83C\uDF26\uFE0F", order: 4 },
+  earth:      { label: "Earth",      emoji: "\uD83C\uDF0D", order: 5 },
+  geology:    { label: "Geology",    emoji: "\uD83E\uDEA8", order: 6 },
+  chemical:   { label: "Chemistry",  emoji: "\u2697\uFE0F", order: 7 },
+  metal:      { label: "Metals",     emoji: "\uD83D\uDD29", order: 8 },
+  materials:  { label: "Materials",  emoji: "\uD83D\uDCE6", order: 9 },
+  life:       { label: "Life",       emoji: "\uD83C\uDF31", order: 10 },
+  physics:    { label: "Physics",    emoji: "\uD83D\uDD2C", order: 11 },
+  technology: { label: "Technology", emoji: "\u2699\uFE0F", order: 12 },
+  space:      { label: "Space",      emoji: "\uD83C\uDF0C", order: 13 },
+  meme:       { label: "Meme & Myth",emoji: "\uD83D\uDE0E", order: 14 },
 };
 function catMeta(cat) { return CATEGORY_META[cat] || { label: cat, emoji: "\uD83D\uDD2E", order: 99 }; }
 
@@ -180,9 +196,10 @@ function makeChip(el, draggable) {
 --------------------------------------------------------------------------- */
 let catActiveCat = null;   // currently selected category in the rail
 let catQuery = "";
+let catActiveId = null;    // currently inspected element (detail sheet)
 
 function setupCatalog() {
-  $("#cat-search").addEventListener("input", e => { catQuery = e.target.value; renderCatalogDetail(); });
+  $("#cat-search").addEventListener("input", e => { catQuery = e.target.value; catActiveId = null; renderCatalogDetail(); });
 }
 
 // Phase-change hint chips for an element (freeze/melt/boil thresholds, flags).
@@ -277,17 +294,113 @@ function renderCatalogDetail() {
       // Pokédex silhouette for locked entries
       return `<div class="cat-cell locked" title="Undiscovered"><span class="cc-ic">❔</span><span class="cc-name">???</span></div>`;
     }
-    const ph = phaseHintHTML(el);
     const physBadge = el.phys ? `<span class="cc-phys" title="Usable in the Sandbox">⚛︎</span>` : "";
-    return `<div class="cat-cell found cat-${el.category}" data-id="${el.id}">
+    const sym = el.phys?.symbol ? `<span class="cc-sym">${el.phys.symbol}</span>` : "";
+    const active = el.id === catActiveId ? " active" : "";
+    return `<div class="cat-cell found cat-${el.category}${active}" data-id="${el.id}" tabindex="0" role="button">
         <span class="cc-ic">${iconHTML(el, 30)}</span>
         <span class="cc-name">${el.name}</span>
+        ${sym}
         ${physBadge}
-        ${ph}
       </div>`;
   }).join("");
 
-  detail.innerHTML = head + `<div class="cat-grid-pdex">${cells || '<div class="cat-empty">No matches.</div>'}</div>`;
+  const sheet = catActiveId ? catalogSheetHTML(catActiveId) : "";
+  detail.innerHTML = head
+    + `<div class="cat-grid-pdex">${cells || '<div class="cat-empty">No matches.</div>'}</div>`
+    + sheet;
+
+  // wire cell -> sheet
+  $$("#cat-detail .cat-cell.found").forEach(c => {
+    const open = () => { catActiveId = (catActiveId === c.dataset.id) ? null : c.dataset.id; renderCatalogDetail(); };
+    c.addEventListener("click", open);
+    c.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
+  });
+  $("#cat-sheet-close")?.addEventListener("click", () => { catActiveId = null; renderCatalogDetail(); });
+  // keep the open sheet in view on small screens
+  if (catActiveId) $("#cat-sheet")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+// A property + recipe data-sheet for one discovered element.
+function catalogSheetHTML(id) {
+  const el = state.el(id);
+  if (!el) return "";
+  const nm = i => state.el(i)?.name || i;
+  const chip = i => {
+    const e = state.el(i);
+    if (!e) return `<span class="sheet-chip">${i}</span>`;
+    const known = state.discovered.has(i);
+    return `<span class="sheet-chip${known ? "" : " unknown"}">${known ? iconHTML(e, 18) : "❔"}<span>${known ? e.name : "???"}</span></span>`;
+  };
+
+  // --- recipes that PRODUCE this element ---
+  const recipes = state.recipesFor(id) || [];
+  let recipeHTML = "";
+  if (el.base) {
+    recipeHTML = `<div class="sheet-recipe base">A base element — present from the start.</div>`;
+  } else if (recipes.length) {
+    recipeHTML = recipes.slice(0, 8).map(([a, b]) =>
+      `<div class="sheet-recipe">${chip(a)}<span class="sheet-plus">+</span>${chip(b)}<span class="sheet-eq">=</span>${chip(id)}</div>`
+    ).join("");
+    if (recipes.length > 8) recipeHTML += `<div class="sheet-more">+${recipes.length - 8} more combinations…</div>`;
+  } else {
+    recipeHTML = `<div class="sheet-recipe none">No known recipe.</div>`;
+  }
+
+  // --- what this element is USED IN (only reveal discovered results) ---
+  const uses = (state.usedIn(id) || []).filter(u => state.discovered.has(u.result));
+  let usesHTML = "";
+  if (uses.length) {
+    usesHTML = `<div class="sheet-section-h">Used in</div><div class="sheet-uses">` +
+      uses.slice(0, 10).map(u =>
+        `<div class="sheet-use">${chip(u.a === id ? u.b : u.a)}<span class="sheet-eq">→</span>${chip(u.result)}</div>`
+      ).join("") +
+      (uses.length > 10 ? `<div class="sheet-more">+${uses.length - 10} more…</div>` : "") +
+      `</div>`;
+  }
+
+  // --- property data table ---
+  const info = state.phaseInfo(el);
+  const rows = [];
+  const add = (k, v) => { if (v != null && v !== "") rows.push(`<div class="prop"><span class="prop-k">${k}</span><span class="prop-v">${v}</span></div>`); };
+  const cap = s => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+  if (info) {
+    if (info.symbol) add("Symbol", `<b>${info.symbol}</b>`);
+    if (info.formula) add("Formula", info.formula);
+    add("State", cap(info.state));
+    if (info.density != null) add("Density", `${info.density} g/cm³`);
+    if (info.meltAt != null) add("Melting pt", `${info.meltAt} °C`);
+    if (info.boilAt != null) add("Boiling pt", `${info.boilAt} °C`);
+  }
+  let flags = [];
+  if (info?.flammable) flags.push(`<span class="pflag fire">🔥 Flammable</span>`);
+  if (info?.conductive) flags.push(`<span class="pflag spark">⚡ Conductive</span>`);
+  if (info?.explosive) flags.push(`<span class="pflag boom">💥 Explosive</span>`);
+  if (info?.soluble) flags.push(`<span class="pflag drop">🧂 Soluble</span>`);
+  const flagHTML = flags.length ? `<div class="sheet-flags">${flags.join("")}</div>` : "";
+  const ph = phaseHintHTML(el);
+
+  const tierTag = `<span class="sheet-tier">Tier ${el.tier}</span>`;
+  const m = catMeta(el.category);
+  const propTable = rows.length
+    ? `<div class="sheet-section-h">Properties</div><div class="sheet-props">${rows.join("")}</div>${flagHTML}${ph}`
+    : (el.phys ? "" : `<div class="sheet-noprop">A conceptual element — no physical properties.</div>`);
+
+  return `<div id="cat-sheet" class="cat-sheet">
+      <button id="cat-sheet-close" class="cat-sheet-close" aria-label="Close">✕</button>
+      <div class="sheet-hero">
+        <div class="sheet-ic">${iconHTML(el, 56)}</div>
+        <div class="sheet-id">
+          <div class="sheet-name">${el.name} ${tierTag}</div>
+          <div class="sheet-cat">${m.emoji} ${m.label}</div>
+        </div>
+      </div>
+      ${el.info ? `<p class="sheet-info">${el.info}</p>` : ""}
+      <div class="sheet-section-h">How to make it</div>
+      <div class="sheet-recipes">${recipeHTML}</div>
+      ${usesHTML}
+      ${propTable}
+    </div>`;
 }
 
 /* ---------------------------------------------------------------------------
@@ -611,6 +724,8 @@ function setupSandbox() {
     li.innerHTML = `<span class="log-ic">${icon}</span><span class="log-txt">${evt.text}</span>`;
     logList.insertBefore(li, logList.firstChild);
     while (logList.children.length > LOG_CAP) logList.removeChild(logList.lastChild);
+    // feed achievements (phase change / reaction unlocks)
+    if (achievements) achievements.noteSandboxEvent(evt.kind);
   };
   const logEmpty = () => {
     logList.innerHTML = `<li class="log-empty">Reactions and phase changes will appear here.</li>`;
@@ -826,7 +941,7 @@ function setupRuns() {
       case "stage-clear": renderRunHud(); break;
       case "relic-offer": showRelicDraft(evt.choices); break;
       case "stage-next":  $("#relic-overlay").classList.add("hidden"); runSelA = null; renderRunFull(); break;
-      case "over":        showRunOver(evt.won); break;
+      case "over":        showRunOver(evt.won); if (achievements) achievements.evaluate(); break;
       case "abandon":     showRunScreen("intro"); break;
     }
   });
@@ -988,6 +1103,93 @@ function showRunOver(won) {
   $("#ro-best").innerHTML = isBest ? `\uD83C\uDF1F New best score!` : `Best: <b>${runs.best.toLocaleString()}</b>`;
   $("#runs-best").textContent = runs.best.toLocaleString();
   $("#runs-over").classList.remove("hidden");
+}
+
+/* ---------------------------------------------------------------------------
+   ACHIEVEMENTS — slide-over panel + unlock toast
+--------------------------------------------------------------------------- */
+let achFilter = "all"; // all | unlocked | locked
+
+function setupAchievementsPanel() {
+  $("#ach-btn")?.addEventListener("click", openAchievements);
+  $("#ach-close")?.addEventListener("click", closeAchievements);
+  $("#ach-backdrop")?.addEventListener("click", closeAchievements);
+  $$("#ach-filters .ach-filter").forEach(b => b.addEventListener("click", () => {
+    achFilter = b.dataset.filter;
+    $$("#ach-filters .ach-filter").forEach(x => x.classList.toggle("active", x === b));
+    renderAchievementsPanel();
+  }));
+}
+
+function openAchievements() {
+  renderAchievementsPanel();
+  $("#ach-panel").classList.add("open");
+  $("#ach-backdrop").classList.add("show");
+}
+function closeAchievements() {
+  $("#ach-panel").classList.remove("open");
+  $("#ach-backdrop").classList.remove("show");
+}
+
+function renderAchievementsPanel() {
+  if (!achievements) return;
+  const { list, unlocked, total } = achievements.summary();
+  const pct = total ? Math.round((unlocked / total) * 100) : 0;
+  $("#ach-count").textContent = `${unlocked} / ${total}`;
+  $("#ach-prog-fill").style.width = pct + "%";
+  // update the topbar badge
+  const badge = $("#ach-badge");
+  if (badge) { badge.textContent = unlocked; badge.classList.toggle("hidden", unlocked === 0); }
+
+  let shown = list;
+  if (achFilter === "unlocked") shown = list.filter(a => a.unlocked);
+  else if (achFilter === "locked") shown = list.filter(a => !a.unlocked);
+  // unlocked first, then by tier weight
+  const tierW = { legendary: 0, gold: 1, silver: 2, bronze: 3 };
+  shown = [...shown].sort((a, b) =>
+    (a.unlocked === b.unlocked ? 0 : a.unlocked ? -1 : 1) ||
+    (tierW[a.tier] - tierW[b.tier]));
+
+  const body = $("#ach-list");
+  body.innerHTML = shown.map(a => {
+    const locked = !a.unlocked;
+    const hidden = a.secret && locked;
+    const name = hidden ? "???" : a.name;
+    const desc = hidden ? "Hidden achievement — keep experimenting." : a.desc;
+    const emoji = hidden ? "\uD83D\uDD12" : a.emoji;
+    return `<div class="ach-item ach-${a.tier}${locked ? " locked" : " unlocked"}">
+        <div class="ach-medal">${emoji}</div>
+        <div class="ach-meta">
+          <div class="ach-name">${name} <span class="ach-tier-tag ach-tag-${a.tier}">${TIER_LABEL[a.tier]}</span></div>
+          <div class="ach-desc">${desc}</div>
+        </div>
+        <div class="ach-state">${a.unlocked ? "\u2713" : ""}</div>
+      </div>`;
+  }).join("") || `<div class="ach-empty">Nothing here yet.</div>`;
+}
+
+// queue so multiple simultaneous unlocks don't overlap
+let achToastQueue = [], achToastBusy = false;
+function onAchievementUnlock(a) {
+  // refresh panel & badge live
+  renderAchievementsPanel();
+  achToastQueue.push(a);
+  if (!achToastBusy) drainAchToast();
+}
+function drainAchToast() {
+  const a = achToastQueue.shift();
+  if (!a) { achToastBusy = false; return; }
+  achToastBusy = true;
+  const t = $("#ach-toast");
+  t.className = `ach-toast ach-${a.tier} show`;
+  t.innerHTML = `<div class="at-medal">${a.emoji}</div>
+    <div class="at-meta"><div class="at-tag">ACHIEVEMENT \u00b7 ${TIER_LABEL[a.tier]}</div>
+    <div class="at-name">${a.name}</div><div class="at-desc">${a.desc}</div></div>`;
+  clearTimeout(t._t);
+  t._t = setTimeout(() => {
+    t.classList.remove("show");
+    setTimeout(drainAchToast, 380);
+  }, 3000);
 }
 
 /* ---------------------------------------------------------------------------

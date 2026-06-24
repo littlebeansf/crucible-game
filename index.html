@@ -25,13 +25,15 @@
     <nav class="tabs">
       <button class="tab active" data-mode="forge">⚗️ Forge</button>
       <button class="tab" data-mode="sandbox">🧪 Sandbox</button>
-      <button class="tab" data-mode="runs">🜂 Runs</button>
+      <button class="tab" data-mode="runs">🧬 Runs</button>
       <button class="tab" data-mode="catalog">📖 Catalog</button>
     </nav>
 
     <div class="stats">
       <div class="stat"><b id="stat-discovered">4</b><span>found</span></div>
       <div class="stat"><b id="stat-pct">0%</b><span id="stat-total-wrap">of <i id="stat-total">0</i></span></div>
+      <button id="ach-btn" class="icon-btn ach-btn" title="Achievements">🏅<span id="ach-badge" class="ach-badge hidden">0</span></button>
+      <button id="settings-btn" class="icon-btn" title="Settings">⚙️</button>
       <button id="reset-btn" class="icon-btn" title="Reset progress">↺</button>
     </div>
   </header>
@@ -90,7 +92,7 @@
         <!-- intro / start screen -->
         <div id="runs-intro" class="runs-intro">
           <div class="runs-intro-card">
-            <div class="runs-glyph">🜂</div>
+            <div class="runs-glyph">🧬</div>
             <h2>Transmutation Runs</h2>
             <p class="runs-tag">A roguelike crafting gauntlet.</p>
             <ul class="runs-rules">
@@ -204,6 +206,58 @@
     <div class="dc-meta"><div class="dc-tag">NEW DISCOVERY</div><div class="dc-name"></div><div class="dc-sub"></div></div>
   </div>
   <div id="toast" class="toast"></div>
+
+  <!-- ACHIEVEMENTS slide-over -->
+  <div id="ach-backdrop" class="panel-backdrop"></div>
+  <aside id="ach-panel" class="side-panel ach-panel" aria-label="Achievements">
+    <div class="sp-head">
+      <div class="sp-title">🏅 Achievements</div>
+      <button id="ach-close" class="sp-close" aria-label="Close">✕</button>
+    </div>
+    <div class="ach-progress">
+      <div class="ach-prog-top"><span>Unlocked</span><b id="ach-count">0 / 0</b></div>
+      <div class="ach-prog-bar"><div id="ach-prog-fill" class="ach-prog-fill"></div></div>
+    </div>
+    <div id="ach-filters" class="ach-filters">
+      <button class="ach-filter active" data-filter="all">All</button>
+      <button class="ach-filter" data-filter="unlocked">Unlocked</button>
+      <button class="ach-filter" data-filter="locked">Locked</button>
+    </div>
+    <div id="ach-list" class="ach-list"></div>
+  </aside>
+  <div id="ach-toast" class="ach-toast"></div>
+
+  <!-- SETTINGS slide-over -->
+  <div id="settings-backdrop" class="panel-backdrop"></div>
+  <aside id="settings-panel" class="side-panel settings-panel" aria-label="Settings">
+    <div class="sp-head">
+      <div class="sp-title">⚙️ Settings</div>
+      <button id="settings-close" class="sp-close" aria-label="Close">✕</button>
+    </div>
+
+    <div class="set-group">
+      <div class="set-label">Theme</div>
+      <div class="theme-toggle">
+        <button class="theme-opt" data-theme="dark"><span class="to-ic">🌙</span> Dark</button>
+        <button class="theme-opt" data-theme="light"><span class="to-ic">☀️</span> Light</button>
+      </div>
+    </div>
+
+    <div class="set-group">
+      <div class="set-label">Accent colour</div>
+      <div id="accent-swatches" class="accent-swatches"></div>
+      <div class="accent-custom">
+        <div class="ac-row">
+          <span class="ac-prev-wrap"><span id="accent-preview" class="ac-preview"></span></span>
+          <input id="accent-slider" class="accent-slider" type="range" min="0" max="360" value="24" aria-label="Custom accent hue" />
+          <span id="accent-hue-label" class="ac-hue">24°</span>
+        </div>
+        <div class="ac-hint">Drag for a custom hue.</div>
+      </div>
+    </div>
+
+    <div class="set-foot">CRUCIBLE · your progress is saved on this device.</div>
+  </aside>
 
   <button id="drawer-toggle" class="drawer-toggle" aria-label="Toggle elements">🧰</button>
 

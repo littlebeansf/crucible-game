@@ -405,20 +405,26 @@ export class Sandbox {
     const i = this.idx(x, y);
     const t = this.temp[i];
 
-    // phase changes by temperature
-    if (p.boilTo && t >= 100 && this.has(p.boilTo)) {
-      this.logEvent("phase", `${this.nameOf(id)} boiled into ${this.nameOf(p.boilTo)}`, "boil|"+id);
+    // ---- phase changes by REAL temperature thresholds ----
+    // Each element carries its own °C thresholds (water boilAt 100, iron meltAt
+    // 1538, etc). Fall back to generic defaults when a value isn't authored.
+    const boilAt = p.boilAt ?? 100;
+    const freezeAt = p.freezeAt ?? 0;
+    const meltAt = p.meltAt ?? 5;
+    const condenseAt = (p.boilAt != null ? p.boilAt - 5 : 95);
+    if (p.boilTo && t >= boilAt && this.has(p.boilTo)) {
+      this.logEvent("phase", `${this.nameOf(id)} boiled into ${this.nameOf(p.boilTo)} at ${Math.round(boilAt)}°C`, "boil|"+id);
       this.set(x, y, p.boilTo); return true;
     }
-    if (p.freezeTo && t <= 0 && this.has(p.freezeTo)) {
-      this.logEvent("phase", `${this.nameOf(id)} froze into ${this.nameOf(p.freezeTo)}`, "freeze|"+id);
+    if (p.freezeTo && t <= freezeAt && this.has(p.freezeTo)) {
+      this.logEvent("phase", `${this.nameOf(id)} froze into ${this.nameOf(p.freezeTo)} at ${Math.round(freezeAt)}°C`, "freeze|"+id);
       this.set(x, y, p.freezeTo); return true;
     }
-    if (p.meltTo && t >= (p.meltAt ?? 5) && this.has(p.meltTo)) {
-      this.logEvent("phase", `${this.nameOf(id)} melted into ${this.nameOf(p.meltTo)}`, "melt|"+id);
+    if (p.meltTo && t >= meltAt && this.has(p.meltTo)) {
+      this.logEvent("phase", `${this.nameOf(id)} melted into ${this.nameOf(p.meltTo)} at ${Math.round(meltAt)}°C`, "melt|"+id);
       this.set(x, y, p.meltTo); return true;
     }
-    if (p.condenseTo && t <= 95 && p.state === "gas" && Math.random() < 0.02 && this.has(p.condenseTo)) {
+    if (p.condenseTo && t <= condenseAt && p.state === "gas" && Math.random() < 0.02 && this.has(p.condenseTo)) {
       this.logEvent("phase", `${this.nameOf(id)} condensed into ${this.nameOf(p.condenseTo)}`, "condense|"+id);
       this.set(x, y, p.condenseTo); return true;
     }
