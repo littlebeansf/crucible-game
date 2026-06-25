@@ -50,6 +50,12 @@ export class Sandbox {
     // (0 = engine ignores the regulator and uses gentle settle-to-20 behavior).
     this.ambient = 20;
     this.enviroForce = 0;
+    // --- visual FX particle layer (explosions etc.) ---
+    // Sub-cell float particles drawn on top of the grid. Pure eye-candy: they do
+    // not affect the simulation. Each: {x,y,vx,vy in CELL units, r radius px,
+    // life, max, kind}. Kinds: flash, fireball, shock, ember, smoke, spark.
+    this.fx = [];
+    this.maxFx = 900;
     this.resize();
   }
 
@@ -155,13 +161,18 @@ export class Sandbox {
         const x = cx + dx, y = cy + dy;
         if (!this.inBounds(x, y)) continue;
         if (id === 0) { this.clearCell(x, y); continue; }
-        // density-based: don't overwrite something heavier with a gas spray, but allow on empty
-        if (this.grid[this.idx(x,y)] === 0 || id === "eraser") {
-          if (id === "eraser") this.clearCell(x,y); else this.set(x, y, id);
-        } else if (this.state(id) !== "gas") {
-          // allow overpaint of lighter cells for solids/liquids/powders
-          this.set(x, y, id);
+        const occupant = this.grid[this.idx(x, y)];
+        // empty cell (or eraser): always honour the stroke
+        if (occupant === 0 || id === "eraser") {
+          if (id === "eraser") this.clearCell(x, y); else this.set(x, y, id);
+          continue;
         }
+        // Solid-on-solid never replaces — solids stack/fill empty space only,
+        // so you can build up structures without erasing what's already there.
+        if (this.state(id) === "solid" && this.state(occupant) === "solid") continue;
+        // Otherwise (liquids/powders, or solids dropped over liquid/gas) overpaint,
+        // but a gas spray still won't bury heavier matter.
+        if (this.state(id) !== "gas") this.set(x, y, id);
       }
   }
 
@@ -223,6 +234,7 @@ export class Sandbox {
     }
     this.diffuseHeat();
     this.updatePressure();
+    this.stepFX();
   }
 
   // Light enclosed-gas pressure model (cheap, runs every 3rd frame).
@@ -404,6 +416,136 @@ export class Sandbox {
       if (np && np.flammable && this.has("fire")) { this.set(nx,ny,"fire"); this.produced("fire"); }
     }
     this.life[this.idx(x,y)] = Math.min(this.life[this.idx(x,y)] || 6, 6);
+    this.spawnExplosionFX(x, y, R);
+  }
+
+  // Spawn an elaborate, multi-layer burst of FX particles centred on grid cell
+  // (cx,cy). Positions/velocities are in CELL units so the effect scales with the
+  // grid. Layers: a white-hot flash, an orange fireball core, an expanding
+  // shockwave ring, flying embers (gravity + drag), bright sparks, and lingering
+  // smoke puffs that rise and fade. Caps total particles so chained blasts stay
+  // performant.
+  spawnExplosionFX(cx, cy, R) {
+    if (this.fx.length > this.maxFx) return;
+    const cell = this.cell;
+    const rnd = (a, b) => a + Math.random() * (b - a);
+    const TAU = Math.PI * 2;
+    // 1. white-hot central flash (one big short-lived glow)
+    this.fx.push({ kind: "flash", x: cx, y: cy, vx: 0, vy: 0, r: R * cell * 1.4, life: 7, max: 7 });
+    // 2. fireball core blobs — a few overlapping orange/yellow puffs that expand
+    for (let i = 0; i < 7; i++) {
+      const a = rnd(0, TAU), sp = rnd(0.05, 0.5);
+      this.fx.push({ kind: "fireball", x: cx, y: cy, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+        r: rnd(R * 0.5, R * 1.1) * cell, life: rnd(14, 24) | 0, max: 24, hue: rnd(18, 42) });
+    }
+    // 3. expanding shockwave ring (stroked circle that grows + thins)
+    this.fx.push({ kind: "shock", x: cx, y: cy, vx: 0, vy: 0, r: cell * 0.6, life: 16, max: 16, grow: R * cell * 0.9 });
+    // 4. embers / debris — fast, gravity-affected, fading hot dots
+    const embers = 22 + (R * 4 | 0);
+    for (let i = 0; i < embers; i++) {
+      const a = rnd(0, TAU), sp = rnd(0.3, 1.6);
+      this.fx.push({ kind: "ember", x: cx, y: cy, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - rnd(0, 0.4),
+        r: rnd(0.8, 2.2), life: rnd(18, 40) | 0, max: 40, hue: rnd(20, 55) });
+    }
+    // 5. bright white sparks — thin streaks, very fast, short-lived
+    for (let i = 0; i < 10; i++) {
+      const a = rnd(0, TAU), sp = rnd(1.2, 2.6);
+      this.fx.push({ kind: "spark", x: cx, y: cy, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+        r: rnd(0.6, 1.4), life: rnd(8, 16) | 0, max: 16 });
+    }
+    // 6. lingering smoke puffs — slow, rise, grow, fade to grey
+    for (let i = 0; i < 8; i++) {
+      const a = rnd(0, TAU), sp = rnd(0.04, 0.28);
+      this.fx.push({ kind: "smoke", x: cx + rnd(-1, 1), y: cy + rnd(-1, 1),
+        vx: Math.cos(a) * sp, vy: -rnd(0.1, 0.35), r: rnd(R * 0.4, R * 0.9) * cell,
+        life: rnd(40, 80) | 0, max: 80, shade: rnd(40, 90) | 0 });
+    }
+  }
+
+  // Advance all FX particles one frame (called from step()). Applies velocity,
+  // gravity/drag per kind, grows/shrinks, and culls dead ones.
+  stepFX() {
+    const fx = this.fx;
+    if (!fx.length) return;
+    let w = 0;
+    for (let i = 0; i < fx.length; i++) {
+      const p = fx[i];
+      p.life--;
+      if (p.life <= 0) continue;
+      p.x += p.vx; p.y += p.vy;
+      if (p.kind === "ember") { p.vy += 0.06; p.vx *= 0.94; p.vy *= 0.97; }
+      else if (p.kind === "spark") { p.vx *= 0.9; p.vy *= 0.9; }
+      else if (p.kind === "fireball") { p.vx *= 0.9; p.vy *= 0.9; p.r *= 1.015; }
+      else if (p.kind === "smoke") { p.vx *= 0.97; p.vy *= 0.98; p.r *= 1.02; }
+      else if (p.kind === "shock") { p.r += p.grow * 0.16; }
+      fx[w++] = p;
+    }
+    fx.length = w;
+  }
+
+  // Draw the FX layer on top of the grid (called at end of render()). Uses
+  // additive blending for the hot layers so overlapping particles glow.
+  renderFX() {
+    const fx = this.fx;
+    if (!fx.length) return;
+    const ctx = this.ctx, cell = this.cell;
+    ctx.save();
+    // additive pass: flash, fireball, shock, ember, spark
+    ctx.globalCompositeOperation = "lighter";
+    for (let i = 0; i < fx.length; i++) {
+      const p = fx[i];
+      const t = p.life / p.max;        // 1 -> 0 as it dies
+      const px = p.x * cell + cell / 2, py = p.y * cell + cell / 2;
+      if (p.kind === "smoke") continue; // smoke drawn in normal pass below
+      if (p.kind === "flash") {
+        const a = Math.min(1, t) * 0.9;
+        const g = ctx.createRadialGradient(px, py, 0, px, py, p.r);
+        g.addColorStop(0, `rgba(255,255,245,${a})`);
+        g.addColorStop(0.4, `rgba(255,220,150,${a * 0.7})`);
+        g.addColorStop(1, "rgba(255,160,60,0)");
+        ctx.fillStyle = g;
+        ctx.beginPath(); ctx.arc(px, py, p.r, 0, Math.PI * 2); ctx.fill();
+      } else if (p.kind === "fireball") {
+        const a = t * 0.8;
+        const g = ctx.createRadialGradient(px, py, 0, px, py, p.r);
+        g.addColorStop(0, `hsla(${p.hue + 20},100%,75%,${a})`);
+        g.addColorStop(0.5, `hsla(${p.hue},100%,55%,${a * 0.8})`);
+        g.addColorStop(1, `hsla(${p.hue - 10},100%,40%,0)`);
+        ctx.fillStyle = g;
+        ctx.beginPath(); ctx.arc(px, py, p.r, 0, Math.PI * 2); ctx.fill();
+      } else if (p.kind === "shock") {
+        const a = t * 0.5;
+        ctx.strokeStyle = `rgba(255,235,200,${a})`;
+        ctx.lineWidth = Math.max(1, cell * 0.5 * t);
+        ctx.beginPath(); ctx.arc(px, py, p.r, 0, Math.PI * 2); ctx.stroke();
+      } else if (p.kind === "ember") {
+        const a = t;
+        ctx.fillStyle = `hsla(${p.hue},100%,${55 + 25 * t}%,${a})`;
+        ctx.beginPath(); ctx.arc(px, py, p.r * (0.5 + t), 0, Math.PI * 2); ctx.fill();
+      } else if (p.kind === "spark") {
+        const a = t;
+        const lx = px - p.vx * cell * 1.5, ly = py - p.vy * cell * 1.5;
+        ctx.strokeStyle = `rgba(255,255,235,${a})`;
+        ctx.lineWidth = p.r;
+        ctx.beginPath(); ctx.moveTo(lx, ly); ctx.lineTo(px, py); ctx.stroke();
+      }
+    }
+    // normal pass: smoke (dark, semi-transparent, no glow)
+    ctx.globalCompositeOperation = "source-over";
+    for (let i = 0; i < fx.length; i++) {
+      const p = fx[i];
+      if (p.kind !== "smoke") continue;
+      const t = p.life / p.max;
+      const a = Math.min(0.35, t * 0.4);
+      const px = p.x * cell + cell / 2, py = p.y * cell + cell / 2;
+      const s = p.shade;
+      const g = ctx.createRadialGradient(px, py, 0, px, py, p.r);
+      g.addColorStop(0, `rgba(${s},${s},${s},${a})`);
+      g.addColorStop(1, `rgba(${s},${s},${s},0)`);
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(px, py, p.r, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
   }
 
   maybeFall(x, y, id, p) {
@@ -563,6 +705,7 @@ export class Sandbox {
         ctx.fillRect(x * cell, y * cell, cell, cell);
       }
     }
+    this.renderFX();
   }
 
   shade(hex, jitter, temp) {

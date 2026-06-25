@@ -70,6 +70,8 @@
         <div class="sb-wrap">
           <canvas id="sandbox-canvas"></canvas>
           <div id="sb-tooltip" class="sb-tooltip"></div>
+          <!-- transient brush-size readout shown while scrolling to resize -->
+          <div id="sb-brush-hint" class="sb-brush-hint" aria-hidden="true"></div>
           <!-- contextual hint banner shown after a scene loads -->
           <div id="sb-hint-bar" class="sb-hint-bar" hidden>
             <span class="shb-ic">💡</span>
@@ -315,6 +317,14 @@
             <button class="theme-opt" data-theme="dark"><span class="to-ic">🌙</span> Dark</button>
             <button class="theme-opt" data-theme="light"><span class="to-ic">☀️</span> Light</button>
           </div>
+        </div>
+        <div class="set-group">
+          <div class="set-label">Creature style</div>
+          <div class="theme-toggle">
+            <button class="theme-opt" data-creature-view="pixel"><span class="to-ic">👾</span> Pixel</button>
+            <button class="theme-opt" data-creature-view="emoji"><span class="to-ic">🐾</span> Emoji</button>
+          </div>
+          <div class="set-hint">Pixel renders living things as blocky retro sprites. Emoji uses the classic icons.</div>
         </div>
         <div class="set-group">
           <div class="set-label">Accent colour</div>

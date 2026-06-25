@@ -782,6 +782,9 @@ function setupSandbox() {
   creatures = new CreatureSystem(sandbox);
   if (window.__crucible) window.__crucible.creatures = creatures;
   creatures.onChange = renderLifePanel;
+  // Apply the persisted creature-style pref now that the system exists (settings
+  // boots before creatures, so it couldn't reach them yet). Default = pixel.
+  creatures.pixelArt = storage.get("crucible_creature_view") !== "emoji";
 
   // canvas pixel from a pointer event (accounts for CSS scaling of the canvas)
   const pxFromEvent = e => {
@@ -935,8 +938,33 @@ function setupSandbox() {
     $("#sb-pause").textContent = sandbox.running ? "⏸ Pause" : "▶ Play";
   });
   const brush = $("#sb-brush");
+  const BRUSH_MIN = +(brush.min || 1), BRUSH_MAX = +(brush.max || 10);
   brush.addEventListener("input", e => { sandbox.brushSize = +e.target.value; });
   $("#sb-eraser").addEventListener("click", () => selectSandboxTool("eraser"));
+
+  // Mouse-wheel / trackpad scroll over the canvas adjusts the brush size, so you
+  // can resize without reaching for the slider. We keep the page from scrolling.
+  let _brushHintTimer = 0;
+  const brushHintEl = $("#sb-brush-hint");
+  const showBrushHint = (v) => {
+    if (!brushHintEl) return;
+    brushHintEl.textContent = `Brush ${v}`;
+    brushHintEl.style.setProperty("--brush-dot", `${Math.max(6, v * 4)}px`);
+    brushHintEl.classList.add("show");
+    clearTimeout(_brushHintTimer);
+    _brushHintTimer = setTimeout(() => brushHintEl.classList.remove("show"), 900);
+  };
+  const setBrush = (n) => {
+    const v = Math.max(BRUSH_MIN, Math.min(BRUSH_MAX, n));
+    sandbox.brushSize = v;
+    brush.value = String(v);
+    showBrushHint(v);
+  };
+  canvas.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const step = e.deltaY < 0 ? 1 : -1;   // scroll up = bigger, down = smaller
+    setBrush(sandbox.brushSize + step);
+  }, { passive: false });
 
   renderQuickBar();
 

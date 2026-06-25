@@ -18,6 +18,17 @@
 
 const THEME_KEY = "crucible_theme";
 const ACCENT_KEY = "crucible_accent";
+const CREATURE_VIEW_KEY = "crucible_creature_view"; // "pixel" (default) | "emoji"
+
+// Apply the chosen creature rendering style to the live creature system, if it
+// exists yet. Safe to call before creatures are created (no-ops); main.js also
+// re-applies the saved pref once the system is built.
+function applyCreatureView(view) {
+  const pixel = view !== "emoji";
+  const cs = window.__crucible && window.__crucible.creatures;
+  if (cs) cs.pixelArt = pixel;
+  return pixel ? "pixel" : "emoji";
+}
 
 // Preset accent hues (HSL hue degrees). Calibrated to feel distinct.
 export const ACCENT_PRESETS = [
@@ -68,8 +79,12 @@ export function setupSettings(storage) {
   applyTheme(savedTheme);
   applyAccent(Number.isFinite(savedHue) ? savedHue : DEFAULT_HUE);
 
+  const savedView = storage.get(CREATURE_VIEW_KEY) === "emoji" ? "emoji" : "pixel";
+  applyCreatureView(savedView);
+
   let theme = savedTheme === "light" ? "light" : "dark";
   let hue = Number.isFinite(savedHue) ? savedHue : DEFAULT_HUE;
+  let creatureView = savedView;
 
   const $ = (s) => document.querySelector(s);
   const panel = $("#settings-panel");
@@ -112,12 +127,25 @@ export function setupSettings(storage) {
   tabBtns.forEach((b) => b.addEventListener("click", () => selectTab(b.dataset.tab)));
 
   // --- theme toggle ---------------------------------------------------------
-  const themeBtns = [...panel.querySelectorAll(".theme-opt")];
+  // Scope to buttons that actually carry data-theme so the creature-style
+  // toggle (also .theme-opt) isn't mistaken for a theme switch.
+  const themeBtns = [...panel.querySelectorAll(".theme-opt[data-theme]")];
   themeBtns.forEach((b) =>
     b.addEventListener("click", () => {
       theme = b.dataset.theme === "light" ? "light" : "dark";
       applyTheme(theme);
       storage.set(THEME_KEY, theme);
+      syncUI();
+    })
+  );
+
+  // --- creature style toggle (pixel | emoji) --------------------------------
+  const viewBtns = [...panel.querySelectorAll(".theme-opt[data-creature-view]")];
+  viewBtns.forEach((b) =>
+    b.addEventListener("click", () => {
+      creatureView = b.dataset.creatureView === "emoji" ? "emoji" : "pixel";
+      applyCreatureView(creatureView);
+      storage.set(CREATURE_VIEW_KEY, creatureView);
       syncUI();
     })
   );
@@ -157,6 +185,9 @@ export function setupSettings(storage) {
       themeBtns.forEach((b) =>
         b.classList.toggle("active", b.dataset.theme === theme)
       );
+      viewBtns.forEach((b) =>
+        b.classList.toggle("active", b.dataset.creatureView === creatureView)
+      );
       if (slider) slider.value = String(hue);
     }
     swatchWrap?.querySelectorAll(".swatch").forEach((b) =>
@@ -176,7 +207,9 @@ export function setupSettings(storage) {
   return {
     setTheme: (t) => { theme = t; applyTheme(t); storage.set(THEME_KEY, t); syncUI(); },
     setHue: (h) => { hue = h; applyAccent(h); storage.set(ACCENT_KEY, String(h)); syncUI(); },
+    setCreatureView: (v) => { creatureView = v === "emoji" ? "emoji" : "pixel"; applyCreatureView(creatureView); storage.set(CREATURE_VIEW_KEY, creatureView); syncUI(); },
     get theme() { return theme; },
     get hue() { return hue; },
+    get creatureView() { return creatureView; },
   };
 }

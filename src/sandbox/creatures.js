@@ -25,6 +25,8 @@
    remove) is handled by main.js which calls into this system.
 ============================================================================ */
 
+import { drawPixelCreature } from "./pixel-sprites.js";
+
 // Per-species blueprint. `locomotion` decides the physics model; the survival
 // rules below read the habitat flags. Tunings are picked for FUN over realism
 // (creatures live ~30-90s so you actually see births, struggles and deaths).
@@ -78,6 +80,9 @@ export class CreatureSystem {
     // the population a player builds (or a scene spawns) stays put. Only an
     // explicit removeAt()/clear() removes life.
     this.persistent = true;
+    // Render mode for living things: true = hand-drawn pixel sprites (default),
+    // false = emoji glyphs. Toggled from Settings → Look.
+    this.pixelArt = true;
   }
 
   clear() { this.list.length = 0; this.selected = null; this._notify(); }
@@ -460,12 +465,7 @@ export class CreatureSystem {
       ctx.translate(0, bob);
       if (cr.facing < 0) ctx.scale(-1, 1);
       const size = (spec.size || 16) * scale;
-      ctx.font = `${size}px serif`;
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      // dead -> show a fading remains glyph
-      const glyph = cr.alive ? spec.emoji : "✨";
-      // selection / low-health ring
+      // selection / low-health ring (drawn un-flipped so it stays circular)
       if (cr.alive && this.selected === cr) {
         ctx.save();
         if (cr.facing < 0) ctx.scale(-1, 1);
@@ -476,7 +476,20 @@ export class CreatureSystem {
         ctx.stroke();
         ctx.restore();
       }
-      ctx.fillText(glyph, 0, 0);
+      if (!cr.alive) {
+        // fading sparkle remains, regardless of render mode
+        ctx.font = `${size}px serif`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("✨", 0, 0);
+      } else if (this.pixelArt) {
+        drawPixelCreature(ctx, cr.kind, size * 1.1);
+      } else {
+        ctx.font = `${size}px serif`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(spec.emoji, 0, 0);
+      }
       ctx.restore();
       // tiny health pip under hurt creatures (alive, <60% hp)
       if (cr.alive && cr.health < 60) {
