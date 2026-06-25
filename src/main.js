@@ -9,13 +9,15 @@ import { Sandbox } from "./sandbox/engine.js";
 import { RunEngine, RELICS } from "./runs.js";
 import { iconHTML, emojiFor, pixelColor } from "./icons.js";
 import { storage } from "./storage.js";
+import { slots } from "./slots.js";
+import { setupSlots as setupSlotsUI } from "./slots-ui.js";
 import { Achievements, TIER_LABEL } from "./achievements.js";
 import { setupSettings } from "./settings.js";
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 
-let DB, state, sandbox, runs, achievements;
+let DB, state, sandbox, runs, achievements, slotsUI;
 let mode = "forge";              // 'forge' | 'sandbox' | 'runs' | 'catalog'
 let drawerSort = "recent";
 let drawerQuery = "";
@@ -46,6 +48,7 @@ async function boot() {
   setupTopbar();
   setupAchievementsPanel();
   setupSettings(storage);
+  setupSlots();
   renderDrawer();
   updateStats();
 
@@ -59,6 +62,8 @@ async function boot() {
       // a newly discovered physical material should appear in the sandbox bar
       if (state.el(evt.id)?.phys) renderQuickBar();
       achievements.evaluate();
+      // keep the active slot's discovered count fresh if the panel is open
+      slotsUI?.render();
     }
     if (evt.type === "discover" && mode === "catalog") renderCatalog();
     if (evt.type === "reset" || evt.type === "import") {
@@ -1203,6 +1208,25 @@ function drainAchToast() {
 /* ---------------------------------------------------------------------------
    TOPBAR / stats / reset
 --------------------------------------------------------------------------- */
+/* ---------------------------------------------------------------------------
+   SAVE SLOTS — multiple independent save games
+--------------------------------------------------------------------------- */
+function setupSlots() {
+  slotsUI = setupSlotsUI({
+    slots,
+    state,
+    runs,
+    // Called after switching to / deleting the active slot: re-read that
+    // slot's progress and best score, then refresh every view in place.
+    onSwitch() {
+      state.reload();        // emits 'reset' -> boot listener re-renders app
+      runs.reloadBest();
+      if (mode === "runs") renderRuns();
+    },
+    toast,
+  });
+}
+
 function setupTopbar() {
   $("#reset-btn").addEventListener("click", () => {
     if (confirm("Reset all discoveries? This cannot be undone.")) state.reset();

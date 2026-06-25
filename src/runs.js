@@ -16,8 +16,10 @@
 ============================================================================ */
 
 import { storage } from "./storage.js";
+import { slots, RUNS_BEST_BASE } from "./slots.js";
 
-const BEST_KEY = "crucible_runs_best_v1";
+// Active slot's namespaced best-score key, resolved on every access.
+function bestKey() { return slots.key(RUNS_BEST_BASE); }
 const BASE = ["water", "fire", "earth", "air"];
 
 /* ---- Relics: between-stage modifiers (Balatro-style) --------------------- */
@@ -48,8 +50,11 @@ export class RunEngine {
   on(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
   emit(type, data = {}) { for (const fn of this.listeners) fn({ type, run: this.run, ...data }); }
 
-  _loadBest() { try { return JSON.parse(storage.get(BEST_KEY) || "0") || 0; } catch { return 0; } }
-  _saveBest() { if (this.run && this.run.score > this.best) { this.best = this.run.score; storage.set(BEST_KEY, JSON.stringify(this.best)); } }
+  _loadBest() { try { return JSON.parse(storage.get(bestKey()) || "0") || 0; } catch { return 0; } }
+  _saveBest() { if (this.run && this.run.score > this.best) { this.best = this.run.score; storage.set(bestKey(), JSON.stringify(this.best)); } }
+
+  // Re-read the best score for the active slot (called after a slot switch).
+  reloadBest() { this.best = this._loadBest(); }
 
   /* ---- recipe helpers ---------------------------------------------------- */
   key(a, b) { return [a, b].sort().join("|"); }

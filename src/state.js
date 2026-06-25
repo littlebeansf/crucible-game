@@ -3,8 +3,11 @@
 ============================================================================ */
 
 import { storage } from "./storage.js";
+import { slots, SAVE_BASE } from "./slots.js";
 
-const SAVE_KEY = "crucible_save_v1";
+// Resolve the active slot's namespaced save key on every access so switching
+// slots routes reads/writes to the right payload without reconstructing state.
+function saveKey() { return slots.key(SAVE_BASE); }
 const BASE_DISCOVERED = ["water", "fire", "earth", "air"];
 
 export class GameState {
@@ -43,9 +46,16 @@ export class GameState {
   on(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
   emit(evt) { for (const fn of this.listeners) fn(evt); }
 
+  // Re-read progress for the (possibly newly-switched) active slot, then notify
+  // listeners so the whole UI re-renders against the loaded slot.
+  reload() {
+    this.load();
+    this.emit({ type: "reset" });
+  }
+
   load() {
     let saved = null;
-    try { saved = JSON.parse(storage.get(SAVE_KEY) || "null"); } catch {}
+    try { saved = JSON.parse(storage.get(saveKey()) || "null"); } catch {}
     // Save migration: keep every previously-unlocked id that still exists in the
     // new element set (stable snake_case ids carry over), then ensure the four
     // base elements are always present. Unknown/removed ids are simply dropped.
@@ -59,12 +69,14 @@ export class GameState {
   }
 
   save() {
-    storage.set(SAVE_KEY, JSON.stringify({
+    storage.set(saveKey(), JSON.stringify({
       discovered: [...this.discovered],
       recent: this.recentlyDiscovered.slice(0, 200),
       achievements: [...this.unlockedAchievements],
       ts: Date.now(),
     }));
+    // keep the slot manifest's metadata (found count + timestamp) in sync
+    slots.touch(slots.activeId(), this.discovered.size);
   }
 
   reset() {
