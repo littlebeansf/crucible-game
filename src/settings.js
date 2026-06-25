@@ -94,6 +94,23 @@ export function setupSettings(storage) {
     if (e.key === "Escape" && panel.classList.contains("open")) close();
   });
 
+  // --- settings tabs --------------------------------------------------------
+  const tabBtns = [...panel.querySelectorAll(".set-tab")];
+  const panes = [...panel.querySelectorAll(".set-pane")];
+  const selectTab = (name) => {
+    tabBtns.forEach((b) => {
+      const on = b.dataset.tab === name;
+      b.classList.toggle("is-active", on);
+      b.setAttribute("aria-selected", String(on));
+    });
+    panes.forEach((p) => {
+      const on = p.dataset.pane === name;
+      p.classList.toggle("is-active", on);
+      p.hidden = !on;
+    });
+  };
+  tabBtns.forEach((b) => b.addEventListener("click", () => selectTab(b.dataset.tab)));
+
   // --- theme toggle ---------------------------------------------------------
   const themeBtns = [...panel.querySelectorAll(".theme-opt")];
   themeBtns.forEach((b) =>

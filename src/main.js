@@ -27,6 +27,12 @@ let mode = "forge";              // 'forge' | 'sandbox' | 'runs' | 'catalog'
 let drawerSort = "recent";
 let drawerQuery = "";
 let drawerPhysOnly = false;
+let drawerCatFilter = null;        // when set (category id), the drawer shows ONLY that category
+const collapsedCats = new Set();   // category ids collapsed in the drawer (category sort)
+
+// Desktop = wide enough that the sidebar drawer is visible. On desktop the sandbox
+// adds materials through the sidebar, and the bottom bar is just category filters.
+function isDesktop() { return window.matchMedia("(min-width: 561px)").matches; }
 
 /* ---------------------------------------------------------------------------
    BOOT
@@ -105,6 +111,8 @@ function switchMode(m) {
   // the element drawer is only useful in Forge/Sandbox; hide it in Runs & Catalog
   document.body.classList.toggle("catalog-mode", m === "catalog" || m === "runs");
   drawerPhysOnly = (m === "sandbox");
+  // The single-category drawer filter is a Sandbox-only concept; clear it elsewhere.
+  if (m !== "sandbox") drawerCatFilter = null;
   $("#phys-filter").classList.toggle("active", drawerPhysOnly);
   renderDrawer();
   if (m === "sandbox") { renderQuickBar(); sandbox.resize(); }
@@ -154,13 +162,17 @@ const PSEUDO_META = {
 function catMeta(cat) { return CATEGORY_META[cat] || PSEUDO_META[cat] || { label: cat, emoji: "\uD83D\uDD2E", order: 99 }; }
 
 function renderDrawer() {
-  const list = state.discoveredList({ query: drawerQuery, sort: drawerSort, physOnly: drawerPhysOnly });
+  let list = state.discoveredList({ query: drawerQuery, sort: drawerSort, physOnly: drawerPhysOnly });
+  // A category filter (driven by the Sandbox bottom bar on desktop) narrows the
+  // drawer to a single category and forces the grouped layout so its header shows.
+  if (drawerCatFilter) list = list.filter(el => el.category === drawerCatFilter);
+  const grouped = drawerSort === "category" || !!drawerCatFilter;
   const wrap = $("#drawer-items");
   wrap.innerHTML = "";
-  wrap.classList.toggle("grouped", drawerSort === "category");
+  wrap.classList.toggle("grouped", grouped);
   const frag = document.createDocumentFragment();
 
-  if (drawerSort === "category") {
+  if (grouped) {
     // group by category, ordered, then alpha within each group
     const groups = new Map();
     for (const el of list) {
@@ -171,9 +183,18 @@ function renderDrawer() {
     for (const [cat, els] of ordered) {
       els.sort((x, y) => x.name.localeCompare(y.name));
       const m = catMeta(cat);
+      const collapsed = collapsedCats.has(cat);
       const header = document.createElement("div");
-      header.className = "cat-header cat-" + cat;
-      header.innerHTML = `<span class="cat-badge">${m.emoji}</span><span class="cat-label">${m.label}</span><span class="cat-num">${els.length}</span>`;
+      header.className = "cat-header cat-" + cat + (collapsed ? " collapsed" : "");
+      header.setAttribute("role", "button");
+      header.setAttribute("tabindex", "0");
+      header.setAttribute("aria-expanded", String(!collapsed));
+      header.title = collapsed ? `Expand ${m.label}` : `Collapse ${m.label}`;
+      header.innerHTML =
+        `<span class="cat-caret" aria-hidden="true">▾</span>` +
+        `<span class="cat-badge">${m.emoji}</span>` +
+        `<span class="cat-label">${m.label}</span>` +
+        `<span class="cat-num">${els.length}</span>`;
       // "Add all" — drop every discovered element in this category onto the Forge
       // board in a tidy grid. Switches to Forge first if you're in the Sandbox.
       const addAll = document.createElement("button");
@@ -184,11 +205,19 @@ function renderDrawer() {
       const ids = els.map(e => e.id);
       addAll.addEventListener("click", (ev) => { ev.stopPropagation(); addCategoryToForge(ids, m.label); });
       header.appendChild(addAll);
+      // click / keyboard toggles collapse (the Add-all button stops propagation)
+      const toggleCat = () => { toggleCategoryCollapse(cat); };
+      header.addEventListener("click", toggleCat);
+      header.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); toggleCat(); }
+      });
       frag.appendChild(header);
-      const grid = document.createElement("div");
-      grid.className = "cat-grid";
-      for (const el of els) grid.appendChild(makeChip(el, true));
-      frag.appendChild(grid);
+      if (!collapsed) {
+        const grid = document.createElement("div");
+        grid.className = "cat-grid";
+        for (const el of els) grid.appendChild(makeChip(el, true));
+        frag.appendChild(grid);
+      }
     }
   } else {
     for (const el of list) frag.appendChild(makeChip(el, true));
@@ -196,6 +225,13 @@ function renderDrawer() {
 
   wrap.appendChild(frag);
   $("#drawer-count").textContent = list.length;
+}
+
+// Collapse/expand a drawer category section (only meaningful in "category" sort).
+function toggleCategoryCollapse(cat) {
+  if (collapsedCats.has(cat)) collapsedCats.delete(cat);
+  else collapsedCats.add(cat);
+  renderDrawer();
 }
 
 function makeChip(el, draggable) {
@@ -1389,7 +1425,16 @@ function renderQuickBar() {
       t.className = "sb-cat-tab" + (sbCatFilter === key ? " active" : "");
       t.dataset.cat = key;
       t.textContent = label;
-      t.addEventListener("click", () => { sbCatFilter = key; renderQuickBar(); });
+      t.addEventListener("click", () => {
+        sbCatFilter = key;
+        // On desktop the bottom bar is just a filter for the SIDEBAR drawer
+        // (materials are added from there). On mobile it drives the bottom tiles.
+        if (isDesktop()) {
+          drawerCatFilter = key === "all" ? null : key;
+          renderDrawer();
+        }
+        renderQuickBar();
+      });
       return t;
     };
     tabsRow.appendChild(mkTab("all", `All · ${mats.length}`));

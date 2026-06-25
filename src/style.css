@@ -221,6 +221,14 @@ body {
 .sb-cat-dot.cat-cosmic { background: var(--c-cosmic); }
 .sb-empty { color: var(--muted); font-size: 12.5px; line-height: 1.5; padding: 10px 12px; max-width: 520px;
   background: var(--bg2); border: 1px dashed var(--line); border-radius: 12px; }
+/* On desktop the sidebar drawer is the place to pick materials, so the bottom
+   bar only keeps the category filter chips (which now filter the sidebar). The
+   item tiles (#sb-quick) are hidden. On mobile the drawer is hidden, so the
+   tiles remain the way to add materials. */
+@media (min-width: 561px) {
+  #sb-quick { display: none; }
+  .sb-cat-tabs { margin-top: 4px; }
+}
 
 /* ---- sandbox HUD (live temp / pressure / phase readout) ---- */
 .sb-hud { position: absolute; top: 10px; right: 10px; z-index: 7; min-width: 132px;
@@ -384,8 +392,16 @@ body.catalog-mode .drawer-toggle { display: none !important; }
 .cat-header { display: flex; align-items: center; gap: 8px; margin: 14px 2px 8px;
   padding: 6px 10px; border-radius: 10px; background: var(--bg2);
   border: 1px solid var(--line); border-left: 3px solid var(--accent);
-  position: sticky; top: -10px; z-index: 1; }
+  position: sticky; top: -10px; z-index: 1; cursor: pointer;
+  transition: background .12s, border-color .12s; user-select: none; }
 .cat-header:first-child { margin-top: 2px; }
+.cat-header:hover { background: var(--panel); }
+.cat-header:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.cat-header.collapsed { margin-bottom: 8px; opacity: .92; }
+/* collapse/expand caret — rotates flat when the section is collapsed */
+.cat-caret { font-size: 11px; line-height: 1; color: var(--muted);
+  transition: transform .16s ease; transform: rotate(0deg); }
+.cat-header.collapsed .cat-caret { transform: rotate(-90deg); }
 .cat-badge { font-size: 16px; line-height: 1; }
 .cat-label { font-size: 12.5px; font-weight: 700; letter-spacing: .02em; color: var(--text); }
 .cat-num { font-size: 11px; font-weight: 700; color: var(--muted);
@@ -736,6 +752,31 @@ body.catalog-mode .drawer-toggle { display: none !important; }
 /* ============================================================================
    SETTINGS PANEL
 ============================================================================ */
+/* settings tab bar */
+.set-tabs { display: flex; gap: 4px; padding: 10px 12px; border-bottom: 1px solid var(--line);
+  background: var(--bg2); }
+.set-tab { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+  font: inherit; font-size: 11.5px; font-weight: 700; letter-spacing: .01em; cursor: pointer;
+  color: var(--muted); background: transparent; border: 1px solid transparent; border-radius: 9px;
+  padding: 7px 6px; transition: background .12s, color .12s, border-color .12s; white-space: nowrap; }
+.set-tab .st-ic { font-size: 13px; line-height: 1; }
+.set-tab:hover { color: var(--text); background: var(--panel); }
+.set-tab.is-active { color: var(--accent); background: var(--accent-soft); border-color: var(--accent-line); }
+.set-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* panes wrapper scrolls; only the active pane is shown */
+.set-panes { flex: 1; overflow-y: auto; }
+.set-pane { display: none; }
+.set-pane.is-active { display: block; }
+
+/* Data tab: export / import buttons */
+.data-row { display: flex; flex-direction: column; gap: 9px; margin-top: 4px; }
+.data-btn { display: inline-flex; align-items: center; gap: 8px; font: inherit; font-size: 13px; font-weight: 600;
+  cursor: pointer; color: var(--text); background: var(--panel2); border: 1px solid var(--line);
+  border-radius: 10px; padding: 11px 14px; transition: background .12s, border-color .12s, transform .08s; }
+.data-btn:hover { background: var(--panel); border-color: var(--accent-line); }
+.data-btn:active { transform: scale(.985); }
+.data-btn .data-ic { font-size: 15px; line-height: 1; }
+
 .set-group { padding: 18px; border-bottom: 1px solid var(--line); }
 .set-label { font-size: 11px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted);
   font-weight: 700; margin-bottom: 12px; }

@@ -46,9 +46,6 @@
         <div class="board-tools">
           <button id="hint-btn" class="tool-btn">💡 Hint</button>
           <button id="clear-board" class="tool-btn">🧹 Clear</button>
-          <button id="export-btn" class="tool-btn" title="Download your progress as a file">⬆️ Export</button>
-          <button id="import-btn" class="tool-btn" title="Load progress from a file">⬇️ Import</button>
-          <input id="import-file" type="file" accept="application/json,.json" hidden>
           <span class="hint-text">Drag to combine · double-click to duplicate · right-click to remove</span>
         </div>
         <div id="board" class="board">
@@ -289,48 +286,79 @@
       <button id="settings-close" class="sp-close" aria-label="Close">✕</button>
     </div>
 
-    <div class="set-group">
-      <div class="set-label-row">
-        <span class="set-label">Save slots</span>
-        <button id="slot-new" class="slot-new-btn" title="Create a new save slot">+ New</button>
-      </div>
-      <div id="slot-list" class="slot-list"></div>
-      <div class="set-hint">Each slot keeps its own discoveries, achievements and best run. Switching is instant.</div>
+    <!-- tab bar -->
+    <div class="set-tabs" role="tablist" aria-label="Settings sections">
+      <button class="set-tab is-active" role="tab" data-tab="save" aria-selected="true"><span class="st-ic">💾</span> Save</button>
+      <button class="set-tab" role="tab" data-tab="appearance" aria-selected="false"><span class="st-ic">🎨</span> Look</button>
+      <button class="set-tab" role="tab" data-tab="sound" aria-selected="false"><span class="st-ic">🔊</span> Sound</button>
+      <button class="set-tab" role="tab" data-tab="data" aria-selected="false"><span class="st-ic">🗂️</span> Data</button>
     </div>
 
-    <div class="set-group">
-      <div class="set-label">Theme</div>
-      <div class="theme-toggle">
-        <button class="theme-opt" data-theme="dark"><span class="to-ic">🌙</span> Dark</button>
-        <button class="theme-opt" data-theme="light"><span class="to-ic">☀️</span> Light</button>
-      </div>
-    </div>
-
-    <div class="set-group">
-      <div class="set-label">Accent colour</div>
-      <div id="accent-swatches" class="accent-swatches"></div>
-      <div class="accent-custom">
-        <div class="ac-row">
-          <span class="ac-prev-wrap"><span id="accent-preview" class="ac-preview"></span></span>
-          <input id="accent-slider" class="accent-slider" type="range" min="0" max="360" value="24" aria-label="Custom accent hue" />
-          <span id="accent-hue-label" class="ac-hue">24°</span>
+    <div class="set-panes">
+      <!-- SAVE -->
+      <div class="set-pane is-active" data-pane="save" role="tabpanel">
+        <div class="set-group">
+          <div class="set-label-row">
+            <span class="set-label">Save slots</span>
+            <button id="slot-new" class="slot-new-btn" title="Create a new save slot">+ New</button>
+          </div>
+          <div id="slot-list" class="slot-list"></div>
+          <div class="set-hint">Each slot keeps its own discoveries, achievements and best run. Switching is instant.</div>
         </div>
-        <div class="ac-hint">Drag for a custom hue.</div>
       </div>
-    </div>
 
-    <div class="set-group">
-      <div class="set-label">Sound</div>
-      <div class="snd-row">
-        <button id="snd-music" class="snd-toggle" aria-pressed="true"><span class="snd-ic">🎵</span> Music</button>
-        <button id="snd-sfx" class="snd-toggle" aria-pressed="true"><span class="snd-ic">🔊</span> Sound FX</button>
+      <!-- APPEARANCE -->
+      <div class="set-pane" data-pane="appearance" role="tabpanel" hidden>
+        <div class="set-group">
+          <div class="set-label">Theme</div>
+          <div class="theme-toggle">
+            <button class="theme-opt" data-theme="dark"><span class="to-ic">🌙</span> Dark</button>
+            <button class="theme-opt" data-theme="light"><span class="to-ic">☀️</span> Light</button>
+          </div>
+        </div>
+        <div class="set-group">
+          <div class="set-label">Accent colour</div>
+          <div id="accent-swatches" class="accent-swatches"></div>
+          <div class="accent-custom">
+            <div class="ac-row">
+              <span class="ac-prev-wrap"><span id="accent-preview" class="ac-preview"></span></span>
+              <input id="accent-slider" class="accent-slider" type="range" min="0" max="360" value="24" aria-label="Custom accent hue" />
+              <span id="accent-hue-label" class="ac-hue">24°</span>
+            </div>
+            <div class="ac-hint">Drag for a custom hue.</div>
+          </div>
+        </div>
       </div>
-      <div class="snd-vol-row">
-        <span class="snd-vic">🔉</span>
-        <input id="snd-vol" class="snd-vol" type="range" min="0" max="100" value="70" aria-label="Master volume" />
-        <span id="snd-vol-label" class="snd-vlabel">70%</span>
+
+      <!-- SOUND -->
+      <div class="set-pane" data-pane="sound" role="tabpanel" hidden>
+        <div class="set-group">
+          <div class="set-label">Sound</div>
+          <div class="snd-row">
+            <button id="snd-music" class="snd-toggle" aria-pressed="true"><span class="snd-ic">🎵</span> Music</button>
+            <button id="snd-sfx" class="snd-toggle" aria-pressed="true"><span class="snd-ic">🔊</span> Sound FX</button>
+          </div>
+          <div class="snd-vol-row">
+            <span class="snd-vic">🔉</span>
+            <input id="snd-vol" class="snd-vol" type="range" min="0" max="100" value="70" aria-label="Master volume" />
+            <span id="snd-vol-label" class="snd-vlabel">70%</span>
+          </div>
+          <div class="set-hint">Ambient music and reaction sounds are generated live — no downloads.</div>
+        </div>
       </div>
-      <div class="set-hint">Ambient music and reaction sounds are generated live — no downloads.</div>
+
+      <!-- DATA -->
+      <div class="set-pane" data-pane="data" role="tabpanel" hidden>
+        <div class="set-group">
+          <div class="set-label">Backup &amp; restore</div>
+          <div class="data-row">
+            <button id="export-btn" class="data-btn" title="Download your progress as a file"><span class="data-ic">⬆️</span> Export progress</button>
+            <button id="import-btn" class="data-btn" title="Load progress from a file"><span class="data-ic">⬇️</span> Import progress</button>
+            <input id="import-file" type="file" accept="application/json,.json" hidden>
+          </div>
+          <div class="set-hint">Export saves all discoveries, achievements and runs to a file you can keep or move to another device. Import merges a saved file into your current slot.</div>
+        </div>
+      </div>
     </div>
 
     <div class="set-foot">CRUCIBLE · your progress is saved on this device.</div>

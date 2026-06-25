@@ -72,6 +72,12 @@ export class CreatureSystem {
     this.selected = null;     // currently selected creature (for stats focus)
     this.onChange = null;     // callback when population/state changes (for UI)
     this._dirtyAt = 0;
+    // When true (default), creatures never DIE & vanish on their own. They still
+    // suffer, show distress states (Suffocating!, Drowning!, …) and lose health,
+    // but health floors just above zero and recovers once conditions improve, so
+    // the population a player builds (or a scene spawns) stays put. Only an
+    // explicit removeAt()/clear() removes life.
+    this.persistent = true;
   }
 
   clear() { this.list.length = 0; this.selected = null; this._notify(); }
@@ -200,8 +206,9 @@ export class CreatureSystem {
     cr.phase += 0.18;
 
     // --- aging & hunger drain ---
-    cr.energy -= 0.05; // slow constant metabolism
-    if (cr.age > cr.maxAge) { this._kill(cr, "Died of old age"); return; }
+    // Persistent mode: metabolism is gentle and old age never kills — life endures.
+    cr.energy -= this.persistent ? 0.02 : 0.05;
+    if (!this.persistent && cr.age > cr.maxAge) { this._kill(cr, "Died of old age"); return; }
 
     // --- environmental damage / survival by locomotion ---
     const here = this.stateAt(cr.x, cr.y);
@@ -232,8 +239,29 @@ export class CreatureSystem {
     }
 
     // --- starvation ---
-    if (cr.energy <= 0) { cr.energy = 0; cr.health -= 1.2; if (!danger && !/!$/.test(cr.state)) cr.state = "Starving"; }
-    if (cr.health <= 0) { this._kill(cr, danger ? "Burned up" : (here === "oob" ? "Lost" : "Perished")); return; }
+    if (cr.energy <= 0) {
+      cr.energy = 0;
+      // in persistent mode hunger nags but doesn't drain to death
+      if (!this.persistent) cr.health -= 1.2;
+      if (!danger && !/!$/.test(cr.state)) cr.state = this.persistent ? "Hungry" : "Starving";
+    }
+    if (this.persistent) {
+      // Floor health just above zero so creatures cling to life and recover.
+      if (cr.health < 6) cr.health = 6;
+      // Recover when safe & in the right element, and slowly refill energy so
+      // creatures don't sit pinned at "Hungry" forever.
+      const safeHere = !danger && t <= 80 && t >= -5;
+      const rightElement =
+        (spec.loco === "swim" && inWater) ||
+        (spec.loco === "fly" && !inWater) ||
+        (spec.loco === "walk" && !inWater) ||
+        (spec.loco === "amph");
+      if (safeHere && rightElement && cr.health < 100) cr.health = Math.min(100, cr.health + 1.5);
+      if (cr.energy < 100) cr.energy = Math.min(100, cr.energy + 0.05);
+    } else if (cr.health <= 0) {
+      this._kill(cr, danger ? "Burned up" : (here === "oob" ? "Lost" : "Perished"));
+      return;
+    }
 
     // --- steering & movement per locomotion ---
     switch (spec.loco) {
@@ -285,7 +313,16 @@ export class CreatureSystem {
           cr.vy += Math.sign(prey.y - cr.y) * 0.18;
           cr.state = "Hunting";
           if (Math.hypot(prey.x - cr.x, prey.y - cr.y) < 12) {
-            this._kill(prey, "Eaten"); cr.energy = Math.min(100, cr.energy + 40);
+            cr.energy = Math.min(100, cr.energy + 40);
+            if (this.persistent) {
+              // persistent mode: the chase is for show — nudge the prey away
+              // (a near-miss) instead of removing it, so life never vanishes.
+              prey.vx += Math.sign(prey.x - cr.x || 1) * 1.4;
+              prey.vy += Math.sign(prey.y - cr.y || 1) * 1.4;
+              prey.state = "Fleeing danger!";
+            } else {
+              this._kill(prey, "Eaten");
+            }
           }
         }
       }
