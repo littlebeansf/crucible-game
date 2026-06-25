@@ -71,6 +71,9 @@ async function boot() {
       if (mode === "catalog") renderCatalog();
       achievements.evaluate();
       renderAchievementsPanel();
+      // new slot / reset / import: let the sandbox re-announce produced
+      // materials so they get rediscovered against the new progress.
+      sandbox?.producedSeen?.clear();
     }
     updateStats();
   });
@@ -661,7 +664,10 @@ function onDiscover(evt) {
   const card = $("#discover-card");
   card.querySelector(".dc-ic").innerHTML = iconHTML(el, 56);
   card.querySelector(".dc-name").textContent = el.name;
-  card.querySelector(".dc-sub").textContent = el.phys ? "New material · usable in Sandbox" : "New discovery";
+  const fromSandbox = evt.from === "sandbox";
+  card.querySelector(".dc-sub").textContent = fromSandbox
+    ? "Discovered in the Sandbox"
+    : (el.phys ? "New material · usable in Sandbox" : "New discovery");
   card.classList.add("show");
   clearTimeout(card._t);
   card._t = setTimeout(() => card.classList.remove("show"), 2200);
@@ -681,6 +687,12 @@ function setupSandbox() {
   sandbox = new Sandbox(canvas, { cell: 5 });
   sandbox.setLibrary(DB.elements);
   if (window.__crucible) window.__crucible.sandbox = sandbox; // debug handle
+
+  // When a reaction or phase change in the sandbox produces a material, also
+  // mark it discovered in the Forge. discoverFromSandbox emits a "discover"
+  // event, so the toast, drawer, catalog, quick-bar and achievements all
+  // update through the normal path. Only fires for genuinely new materials.
+  sandbox.onProduce = (id) => { state.discoverFromSandbox(id); };
 
   let painting = false;
   const paintAt = e => {

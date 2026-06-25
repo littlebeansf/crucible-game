@@ -169,6 +169,19 @@ export class GameState {
     return { result, isNew };
   }
 
+  // Discover an element encountered as the OUTPUT of a Sandbox reaction or
+  // phase change (e.g. Lava + Water makes Stone + Steam). Mirrors combine()'s
+  // bookkeeping so it appears in the Forge drawer, catalog and quick-bar.
+  // Returns true only when this is a brand-new discovery.
+  discoverFromSandbox(id) {
+    if (!id || !this.elements[id] || this.discovered.has(id)) return false;
+    this.discovered.add(id);
+    this.recentlyDiscovered.unshift(id);
+    this.save();
+    this.emit({ type: "discover", id, from: "sandbox" });
+    return true;
+  }
+
   // list of discovered elements, optionally filtered/sorted
   discoveredList({ query = "", sort = "recent", physOnly = false } = {}) {
     let ids = [...this.discovered];

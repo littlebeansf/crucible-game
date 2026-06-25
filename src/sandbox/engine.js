@@ -35,6 +35,12 @@ export class Sandbox {
     this.eventSeen = new Map(); // de-dupe key -> last frame logged
     this.maxEvents = 60;
     this.onEvent = null;       // optional callback(evt) for live UI
+    // Fired with an element id whenever a REACTION or PHASE CHANGE produces a
+    // material (not when the player paints). The app uses this to mark the
+    // result as discovered in the Forge. De-duped via producedSeen so a busy
+    // sim doesn't fire thousands of times per second.
+    this.onProduce = null;
+    this.producedSeen = new Set();
     this.pressureEnabled = true;
     this.resize();
   }
@@ -49,6 +55,14 @@ export class Sandbox {
     this.events.push(evt);
     if (this.events.length > this.maxEvents) this.events.shift();
     if (this.onEvent) { try { this.onEvent(evt); } catch (e) {} }
+  }
+
+  // Note that a reaction / phase change produced `id`. Fires onProduce once per
+  // distinct material per session so the Forge can mark it discovered.
+  produced(id) {
+    if (!id || this.producedSeen.has(id)) return;
+    this.producedSeen.add(id);
+    if (this.onProduce) { try { this.onProduce(id); } catch (e) {} }
   }
 
   // human-friendly element name for logs/HUD
@@ -253,7 +267,7 @@ export class Sandbox {
         // expire -> ash/smoke/empty depending on behavior
         const beh = p && p.behavior;
         if (beh === "fire" || beh === "explosion") {
-          if (Math.random() < 0.3 && this.has("smoke")) this.set(x, y, "smoke");
+          if (Math.random() < 0.3 && this.has("smoke")) { this.set(x, y, "smoke"); this.produced("smoke"); }
           else this.clearCell(x, y);
         } else this.clearCell(x, y);
         return;
@@ -328,11 +342,11 @@ export class Sandbox {
       const np = this.phys(nid);
       if (np && np.flammable && Math.random() < 0.25) {
         const fid = this.has("fire") ? "fire" : id;
-        this.set(nx, ny, fid);
+        this.set(nx, ny, fid); this.produced(fid);
       }
       // boil water it touches
       if (nid && np && np.behavior === "water" && Math.random() < 0.2 && this.has("steam")) {
-        this.set(nx, ny, "steam");
+        this.set(nx, ny, "steam"); this.produced("steam");
       }
     }
     // flicker upward
@@ -350,9 +364,9 @@ export class Sandbox {
       const nid = this.grid[this.idx(nx,ny)];
       const np = this.phys(nid);
       if (np && np.conductive && Math.random()<0.5 && this.has("electricity")) {
-        this.set(nx, ny, "electricity", { life: 6 });
+        this.set(nx, ny, "electricity", { life: 6 }); this.produced("electricity");
       }
-      if (np && np.flammable && Math.random()<0.4 && this.has("fire")) this.set(nx,ny,"fire");
+      if (np && np.flammable && Math.random()<0.4 && this.has("fire")) { this.set(nx,ny,"fire"); this.produced("fire"); }
     }
     if (Math.random()<0.6) this.tryRiseInto(x,y,x,y-1,0.2);
   }
@@ -365,10 +379,10 @@ export class Sandbox {
       if (!this.inBounds(nx,ny)) continue;
       const nid = this.grid[this.idx(nx,ny)];
       const np = this.phys(nid);
-      if (!nid) { if (Math.random()<0.25 && this.has("fire")) this.set(nx,ny,"fire"); continue; }
+      if (!nid) { if (Math.random()<0.25 && this.has("fire")) { this.set(nx,ny,"fire"); this.produced("fire"); } continue; }
       if (np && (np.state==="powder"||np.state==="liquid") && Math.random()<0.5) this.clearCell(nx,ny);
-      if (np && np.explosive && (nx!==x||ny!==y) && Math.random()<0.6 && this.has("explosion")) this.set(nx,ny,"explosion");
-      if (np && np.flammable && this.has("fire")) this.set(nx,ny,"fire");
+      if (np && np.explosive && (nx!==x||ny!==y) && Math.random()<0.6 && this.has("explosion")) { this.set(nx,ny,"explosion"); this.produced("explosion"); }
+      if (np && np.flammable && this.has("fire")) { this.set(nx,ny,"fire"); this.produced("fire"); }
     }
     this.life[this.idx(x,y)] = Math.min(this.life[this.idx(x,y)] || 6, 6);
   }
@@ -414,23 +428,23 @@ export class Sandbox {
     const condenseAt = (p.boilAt != null ? p.boilAt - 5 : 95);
     if (p.boilTo && t >= boilAt && this.has(p.boilTo)) {
       this.logEvent("phase", `${this.nameOf(id)} boiled into ${this.nameOf(p.boilTo)} at ${Math.round(boilAt)}°C`, "boil|"+id);
-      this.set(x, y, p.boilTo); return true;
+      this.set(x, y, p.boilTo); this.produced(p.boilTo); return true;
     }
     if (p.freezeTo && t <= freezeAt && this.has(p.freezeTo)) {
       this.logEvent("phase", `${this.nameOf(id)} froze into ${this.nameOf(p.freezeTo)} at ${Math.round(freezeAt)}°C`, "freeze|"+id);
-      this.set(x, y, p.freezeTo); return true;
+      this.set(x, y, p.freezeTo); this.produced(p.freezeTo); return true;
     }
     if (p.meltTo && t >= meltAt && this.has(p.meltTo)) {
       this.logEvent("phase", `${this.nameOf(id)} melted into ${this.nameOf(p.meltTo)} at ${Math.round(meltAt)}°C`, "melt|"+id);
-      this.set(x, y, p.meltTo); return true;
+      this.set(x, y, p.meltTo); this.produced(p.meltTo); return true;
     }
     if (p.condenseTo && t <= condenseAt && p.state === "gas" && Math.random() < 0.02 && this.has(p.condenseTo)) {
       this.logEvent("phase", `${this.nameOf(id)} condensed into ${this.nameOf(p.condenseTo)}`, "condense|"+id);
-      this.set(x, y, p.condenseTo); return true;
+      this.set(x, y, p.condenseTo); this.produced(p.condenseTo); return true;
     }
     if (p.coolTo && t <= 600 && this.has(p.coolTo)) {
       this.logEvent("phase", `${this.nameOf(id)} cooled into ${this.nameOf(p.coolTo)}`, "cool|"+id);
-      this.set(x, y, p.coolTo); return true;
+      this.set(x, y, p.coolTo); this.produced(p.coolTo); return true;
     }
 
     const neigh = [[0,1],[0,-1],[1,0],[-1,0]];
@@ -446,8 +460,8 @@ export class Sandbox {
       // lava + water -> stone + steam
       if (p.behavior === "lava" && np.behavior === "water") {
         this.logEvent("reaction", `${this.nameOf(id)} + ${this.nameOf(nid)} → Stone + Steam`, "lava-water");
-        if (this.has("stone")) this.set(x, y, "stone");
-        if (this.has("steam")) this.set(nx, ny, "steam");
+        if (this.has("stone")) { this.set(x, y, "stone"); this.produced("stone"); }
+        if (this.has("steam")) { this.set(nx, ny, "steam"); this.produced("steam"); }
         return true;
       }
       // water + lava handled above from lava's perspective; also cool hot cells
@@ -463,14 +477,14 @@ export class Sandbox {
       if (p.behavior === "water" && (np.behavior === "fire")) {
         this.logEvent("reaction", `Water extinguished Fire → Steam`, "water-fire");
         this.clearCell(nx, ny);
-        if (this.has("steam")) this.set(x, y, "steam");
+        if (this.has("steam")) { this.set(x, y, "steam"); this.produced("steam"); }
         return true;
       }
       // salt dissolves in water
       if (p.soluble && np.behavior === "water" && Math.random() < 0.05) {
         if (this.has("saltwater")) {
           this.logEvent("reaction", `${this.nameOf(id)} dissolved into Saltwater`, "soluble|"+id);
-          this.set(nx, ny, "saltwater"); this.clearCell(x, y); return true;
+          this.set(nx, ny, "saltwater"); this.produced("saltwater"); this.clearCell(x, y); return true;
         }
       }
       // plant grows into adjacent water/empty toward light (up) occasionally
@@ -485,7 +499,7 @@ export class Sandbox {
       // ignite if flammable & hot neighbor
       if (p.flammable && np.behavior === "fire" && Math.random() < 0.3 && this.has("fire")) {
         this.logEvent("reaction", `${this.nameOf(id)} caught Fire`, "ignite|"+id);
-        this.set(x, y, "fire"); return true;
+        this.set(x, y, "fire"); this.produced("fire"); return true;
       }
     }
     return false;
