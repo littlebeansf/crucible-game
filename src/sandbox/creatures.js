@@ -265,9 +265,11 @@ export class CreatureSystem {
     } else if (spec.loco === "fly") {
       // FLYERS: drown if submerged in water; otherwise fine in open air.
       if (inWater) { cr.health -= 5; cr.state = "Drowning!"; }
+      else if (cr.state === "Drowning!") cr.state = "Idle"; // back in air -> recover
     } else if (spec.loco === "walk") {
       // WALKERS (incl. humans): drown if head underwater.
       if (inWater) { cr.health -= 4; cr.state = "Drowning!"; }
+      else if (cr.state === "Drowning!") cr.state = "Idle"; // breathing air again -> recover
     } else if (spec.loco === "amph") {
       // AMPHIBIANS (frog/duck/penguin): happy in water OR on land.
       if (inWater && (cr.state === "Idle")) cr.state = "Swimming";
