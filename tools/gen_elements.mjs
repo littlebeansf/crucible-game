@@ -29,6 +29,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildExpansion } from "./expansion.mjs";
+import { buildExpansion2 } from "./expansion2.mjs";
+import { buildExpansion3 } from "./expansion3.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const OUT_DIR = path.join(__dirname, "..", "src", "data");
@@ -301,10 +304,10 @@ R("copper","pressure","zinc", { name:"Zinc", emoji:"⚙️", icon:"zinc", tier:4
   tags:["element","metal"],
   phys:P.solid({ density:7.14, behavior:"static", meltAt:420, conductive:true, color:"#b6bcc2", symbol:"Zn" }),
   info:"Zinc (Zn): used to galvanise steel against rust. MP 420 °C." });
-R("copper","zinc","tin", { name:"Tin", emoji:"🥫", icon:"tin", tier:4, category:"metal",
+R("stone","lead","tin", { name:"Tin", emoji:"🥫", icon:"tin", tier:4, category:"metal",
   tags:["element","metal","soft"],
   phys:P.solid({ density:7.31, behavior:"static", meltAt:232, conductive:true, color:"#cdd2d8", symbol:"Sn" }),
-  info:"Tin (Sn): a soft, low-melting metal used in solder and bronze. MP 232 °C." });
+  info:"Tin (Sn): a soft, low-melting metal smelted from ore, used in solder and bronze. MP 232 °C." });
 R("stone","time","lead", { name:"Lead", emoji:"🪫", icon:"lead", tier:4, category:"metal",
   tags:["element","metal","heavy","toxic"],
   phys:P.solid({ density:11.34, behavior:"static", meltAt:327, color:"#6b7178", symbol:"Pb", conductive:true }),
@@ -497,7 +500,7 @@ R("copper","tin","bronze", { name:"Bronze", emoji:"🛡️", icon:"bronze", tier
   tags:["alloy","metal"],
   phys:P.solid({ density:8.8, behavior:"static", meltAt:950, conductive:true, color:"#b8732e" }),
   info:"Bronze: copper + tin. The defining alloy of the Bronze Age." });
-R("copper","gold","brass", { name:"Brass", emoji:"🎺", icon:"brass", tier:5, category:"metal",
+R("copper","zinc","brass", { name:"Brass", emoji:"🎺", icon:"brass", tier:5, category:"metal",
   tags:["alloy","metal"],
   phys:P.solid({ density:8.5, behavior:"static", meltAt:930, conductive:true, color:"#d4a72c" }),
   info:"Brass: copper + zinc. Bright, corrosion-resistant, used for instruments." });
@@ -961,6 +964,16 @@ R("mud","fire","ceramic",null);
 R("sand","wind","dune", { name:"Dune", emoji:"🏜️", icon:"dune", tier:3, category:"geology", tags:["sand"], phys:P.powder({ density:1.6, behavior:"powder", color:"#e0c178" }), info:"Dune: a hill of wind-blown sand." });
 
 console.log("Authored base library:", elements.size, "elements,", recipes.size, "recipes.");
+
+/* ===========================================================================
+   V3 EXPANSION — large batch of real-world things (targets 1000+ total)
+=========================================================================== */
+buildExpansion({ el, R, alt, combine, P, elements, recipes, key });
+console.log("After expansion 1:", elements.size, "elements,", recipes.size, "recipes.");
+buildExpansion2({ el, R, alt, combine, P, elements, recipes, key });
+console.log("After expansion 2:", elements.size, "elements,", recipes.size, "recipes.");
+buildExpansion3({ el, R, alt, combine, P, elements, recipes, key });
+console.log("After expansion 3:", elements.size, "elements,", recipes.size, "recipes.");
 if (collisions.length) {
   console.warn("\nRECIPE KEY COLLISIONS (", collisions.length, "):");
   collisions.forEach((c) => console.warn("  " + c));

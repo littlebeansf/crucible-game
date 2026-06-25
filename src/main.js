@@ -128,7 +128,12 @@ const CATEGORY_META = {
   space:      { label: "Space",      emoji: "\uD83C\uDF0C", order: 13 },
   meme:       { label: "Meme & Myth",emoji: "\uD83D\uDE0E", order: 14 },
 };
-function catMeta(cat) { return CATEGORY_META[cat] || { label: cat, emoji: "\uD83D\uDD2E", order: 99 }; }
+// Pseudo-categories: property buckets that span multiple categories.
+const PSEUDO_META = {
+  __phys__: { label: "Physical materials", emoji: "\u269B\uFE0F", order: -2 },
+  __life__: { label: "Lifeforms",          emoji: "\uD83C\uDF31", order: -1 },
+};
+function catMeta(cat) { return CATEGORY_META[cat] || PSEUDO_META[cat] || { label: cat, emoji: "\uD83D\uDD2E", order: 99 }; }
 
 function renderDrawer() {
   const list = state.discoveredList({ query: drawerQuery, sort: drawerSort, physOnly: drawerPhysOnly });
@@ -245,13 +250,13 @@ function renderCatalogRail() {
     .sort((a, b) => catMeta(a[0]).order - catMeta(b[0]).order);
   // a couple of special "property" buckets at the top
   const special = [
-    ["⚛︎ Physical materials", cs.phys, "phys"],
-    ["🌱 Lifeforms", cs.life, "life-bucket"],
+    ["⚛︎ Physical materials", cs.phys, "__phys__"],
+    ["🌱 Lifeforms", cs.life, "__life__"],
   ];
   let html = `<div class="rail-section">Properties</div>`;
-  for (const [label, v] of special) {
+  for (const [label, v, key] of special) {
     const pct = v.total ? Math.round((v.found / v.total) * 100) : 0;
-    html += railRow(label, v.found, v.total, pct, null, true);
+    html += railRow(label, v.found, v.total, pct, key, true);
   }
   html += `<div class="rail-section">Categories</div>`;
   for (const [cat, v] of entries) {
@@ -281,7 +286,10 @@ function renderCatalogDetail() {
   $$("#cat-rail .cat-row[data-cat]").forEach(r => r.classList.toggle("active", r.dataset.cat === catActiveCat));
   const m = catMeta(catActiveCat);
   const list = state.catalogCategory(catActiveCat, { query: catQuery });
-  const cs = state.categoryStats().byCategory[catActiveCat] || { found: 0, total: 0 };
+  const stats = state.categoryStats();
+  const cs = catActiveCat === "__phys__" ? stats.phys
+    : catActiveCat === "__life__" ? stats.life
+    : (stats.byCategory[catActiveCat] || { found: 0, total: 0 });
   const pct = cs.total ? ((cs.found / cs.total) * 100).toFixed(0) : 0;
 
   const head = `<div class="cat-detail-head">

@@ -209,9 +209,15 @@ export class GameState {
   catalogCategory(cat, { query = "" } = {}) {
     const q = query.trim().toLowerCase();
     const list = [];
+    // Pseudo-buckets: filter by a physical property instead of a category.
+    const matchCat = (el) => {
+      if (cat === "__phys__") return !!el.phys;
+      if (cat === "__life__") return (el.category || "other") === "life";
+      return (el.category || "other") === cat;
+    };
     for (const id in this.elements) {
       const el = this.elements[id];
-      if ((el.category || "other") !== cat) continue;
+      if (!matchCat(el)) continue;
       const found = this.discovered.has(id);
       if (q && found && !el.name.toLowerCase().includes(q)) continue;
       if (q && !found) continue; // can't search by name for locked entries
