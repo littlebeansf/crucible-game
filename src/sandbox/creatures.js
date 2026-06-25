@@ -157,6 +157,36 @@ export class CreatureSystem {
     const st = this.stateAt(px, py + this.sb.cell);
     return st === "solid" || st === "powder";
   }
+  // Find the surface height (pixel Y of the TOP of the topmost filled cell) at
+  // column `px`, searching downward from `fromPy`. The sandbox is a 2-D side-on
+  // room, so walkers must stand ON TOP of sand/solids, not be buried inside them.
+  // Returns the surface pixel Y, or null if no ground is found below.
+  surfaceY(px, fromPy) {
+    const sb = this.sb, cell = sb.cell;
+    let cx = Math.floor(px / cell);
+    let cy = Math.max(0, Math.floor(fromPy / cell));
+    if (cx < 0 || cx >= sb.W) return null;
+    for (let y = cy; y < sb.H; y++) {
+      const id = sb.grid[sb.idx(cx, y)];
+      if (!id) continue;
+      const st = sb.state(id);
+      if (st === "solid" || st === "powder") return y * cell; // top edge of this cell
+    }
+    return null;
+  }
+  // Snap a grounded walker so its FEET rest on the surface (sprite is drawn
+  // centred on cr.y, so the feet sit ~footOffset below centre). Keeps the
+  // creature sitting cleanly on top of the sand instead of sunk into it.
+  _settleOnSurface(cr) {
+    const foot = (cr.spec.size || 16) * 0.42; // distance from centre to feet
+    // look from a little above the creature so we don't grab a ceiling cell
+    const surf = this.surfaceY(cr.x, cr.y - foot);
+    if (surf == null) return false;
+    const restY = surf - foot;
+    // only correct when standing on / sunk into ground (don't yank mid-jump up)
+    if (cr.y >= restY - 1) { cr.y = restY; if (cr.vy > 0) cr.vy = 0; return true; }
+    return false;
+  }
   tempAt(px, py) {
     const c = this.cellAt(px, py);
     if (c.oob) return this.sb.ambient;
@@ -388,15 +418,15 @@ export class CreatureSystem {
         if (!/!$/.test(cr.state)) cr.state = Math.abs(cr.vx) < 0.1 ? "Standing" : "Walking";
       }
     }
-    // resolve ground: if a solid is directly below, stop falling and rest on it
-    if (this.groundBelow(cr.x, cr.y)) { if (cr.vy > 0) cr.vy = 0; }
-    else if (this.stateAt(cr.x, cr.y) === "solid" || this.stateAt(cr.x, cr.y) === "powder") {
-      // embedded in solid -> pop up
-      cr.vy = -1;
-    }
     cr.vx *= 0.85;
-    this._limit(cr, 1.6);
+    // clamp horizontal stroll speed only; let gravity build a real fall speed so
+    // creatures drop onto the floor instead of drifting down at a crawl.
+    if (cr.vx > 1.6) cr.vx = 1.6; else if (cr.vx < -1.6) cr.vx = -1.6;
+    if (cr.vy > 6) cr.vy = 6;
     cr.x += cr.vx; cr.y += cr.vy;
+    // resolve ground: rest the creature's FEET on the sand/solid surface so it
+    // stands on top of the 2-D room floor instead of sinking into it.
+    this._settleOnSurface(cr);
   }
 
   _amph(cr, W, H) {
@@ -421,9 +451,14 @@ export class CreatureSystem {
         cr.vx += (Math.random() * 2 - 1) * 0.12;
         if (!/!$/.test(cr.state)) cr.state = "Waddling";
       }
-      if (this.groundBelow(cr.x, cr.y) && cr.vy > 0) cr.vy = 0;
       cr.vx *= 0.85;
-      this._limit(cr, 1.8);
+      // clamp horizontal speed only; allow a real gravity fall to the floor
+      if (cr.vx > 1.8) cr.vx = 1.8; else if (cr.vx < -1.8) cr.vx = -1.8;
+      if (cr.vy > 6) cr.vy = 6;
+      cr.x += cr.vx; cr.y += cr.vy;
+      // rest feet on the surface (skip while mid-hop / rising)
+      if (cr.vy >= -0.5) this._settleOnSurface(cr);
+      return;
     }
     cr.x += cr.vx; cr.y += cr.vy;
   }
