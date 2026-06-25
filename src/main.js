@@ -172,6 +172,16 @@ function renderDrawer() {
       const header = document.createElement("div");
       header.className = "cat-header cat-" + cat;
       header.innerHTML = `<span class="cat-badge">${m.emoji}</span><span class="cat-label">${m.label}</span><span class="cat-num">${els.length}</span>`;
+      // "Add all" — drop every discovered element in this category onto the Forge
+      // board in a tidy grid. Switches to Forge first if you're in the Sandbox.
+      const addAll = document.createElement("button");
+      addAll.className = "cat-addall";
+      addAll.type = "button";
+      addAll.title = `Add all ${els.length} ${m.label} to the Forge`;
+      addAll.innerHTML = `<span class="caa-ic">⊕</span><span class="caa-tx">Add all</span>`;
+      const ids = els.map(e => e.id);
+      addAll.addEventListener("click", (ev) => { ev.stopPropagation(); addCategoryToForge(ids, m.label); });
+      header.appendChild(addAll);
       frag.appendChild(header);
       const grid = document.createElement("div");
       grid.className = "cat-grid";
@@ -507,6 +517,30 @@ function spawnOnBoard(id, x, y) {
   node.animate([{ transform: "scale(.4)", opacity: 0 }, { transform: "scale(1)", opacity: 1 }], { duration: 220, easing: "cubic-bezier(.2,1.4,.4,1)" });
 }
 
+// Drop every element id in `ids` onto the Forge board in a tidy, centered grid.
+// Triggered from the "Add all" button on a category header (category sort).
+function addCategoryToForge(ids, label = "items") {
+  if (!ids || !ids.length) return;
+  if (mode !== "forge") switchMode("forge");
+  const r = board.getBoundingClientRect();
+  const TILE = 84;                       // spacing between node centers
+  const margin = 56;
+  const usableW = Math.max(TILE, r.width - margin * 2);
+  const cols = Math.max(1, Math.min(ids.length, Math.floor(usableW / TILE)));
+  const rows = Math.ceil(ids.length / cols);
+  const gridW = (cols - 1) * TILE;
+  const gridH = (rows - 1) * TILE;
+  const startX = r.width / 2 - gridW / 2;
+  const startY = Math.max(margin, r.height / 2 - gridH / 2);
+  ids.forEach((id, i) => {
+    const col = i % cols, row = (i / cols) | 0;
+    const jx = (Math.random() * 10 - 5), jy = (Math.random() * 10 - 5); // tiny scatter so it feels organic
+    spawnOnBoard(id, startX + col * TILE + jx, startY + row * TILE + jy);
+  });
+  audio.sfx("combine");
+  toast(`Added ${ids.length} ${label} to the Forge`, "\u2295");
+}
+
 function makeDraggable(rec) {
   const node = rec.node;
   let startX, startY, ox, oy, dragging = false, moved = false;
@@ -793,7 +827,7 @@ function setupSandbox() {
   canvas.addEventListener("pointerup", () => painting = false);
   canvas.addEventListener("pointerleave", () => { painting = false; hideTip(); });
 
-  $("#sb-clear").addEventListener("click", () => sandbox.clearAll());
+  $("#sb-clear").addEventListener("click", () => { sandbox.clearAll(); resetClimateUI(); });
   $("#sb-pause").addEventListener("click", () => {
     sandbox.running = !sandbox.running;
     $("#sb-pause").textContent = sandbox.running ? "⏸ Pause" : "▶ Play";
@@ -815,6 +849,82 @@ function setupSandbox() {
 
   // Scenes UI lives inside the sandbox view.
   setupScenes();
+  // Temperature regulator (global ambient climate control).
+  setupClimate();
+}
+
+/* ---------------------------------------------------------------------------
+   CLIMATE — temperature regulator: drives the sandbox's global ambient temp
+--------------------------------------------------------------------------- */
+function setupClimate() {
+  const panel = $("#sb-climate");
+  const toggle = $("#sb-climate-toggle");
+  const slider = $("#sb-climate-slider");
+  const valEl = $("#clm-val");
+  const stateEl = $("#clm-state");
+  if (!panel || !toggle || !slider) return;
+
+  // Describe the current climate in plain language + a colour cue.
+  const describe = (t) => {
+    if (t <= -20) return { label: "Deep freeze", cls: "cold" };
+    if (t < 0)    return { label: "Freezing", cls: "cold" };
+    if (t < 15)   return { label: "Cold", cls: "cool" };
+    if (t <= 25)  return { label: "Off", cls: "off" };
+    if (t < 100)  return { label: "Warm", cls: "warm" };
+    if (t < 400)  return { label: "Hot", cls: "hot" };
+    if (t < 900)  return { label: "Scorching", cls: "hot" };
+    return { label: "Molten", cls: "hot" };
+  };
+
+  const apply = (t, { sfx = false } = {}) => {
+    const v = Math.max(-60, Math.min(1600, Math.round(t)));
+    sandbox.setAmbient(v);
+    slider.value = String(v);
+    valEl.textContent = `${v}\u00B0C`;
+    const d = describe(v);
+    stateEl.textContent = d.label;
+    panel.dataset.clm = d.cls;
+    // tint the toolbar button when the regulator is actively on
+    toggle.classList.toggle("active", d.cls !== "off");
+    // fill the slider track up to the thumb for a nice gradient read
+    const pct = ((v - (-60)) / (1600 - (-60))) * 100;
+    slider.style.setProperty("--clm-pct", pct.toFixed(1) + "%");
+    if (sfx) {
+      if (v <= 0) audio.sfx("freeze");
+      else if (v >= 300) audio.sfx("sizzle");
+      else audio.sfx("click");
+    }
+  };
+
+  toggle.addEventListener("click", () => {
+    const open = panel.classList.toggle("open");
+    toggle.setAttribute("aria-expanded", String(open));
+    if (open) { closeOtherSbPanels("climate"); audio.sfx("click"); }
+  });
+  $("#sb-climate-close")?.addEventListener("click", () => panel.classList.remove("open"));
+
+  // live drag (no SFX spam) + a single tick when released
+  slider.addEventListener("input", () => apply(+slider.value));
+  slider.addEventListener("change", () => apply(+slider.value, { sfx: true }));
+
+  panel.querySelectorAll(".clm-preset").forEach(btn => {
+    btn.addEventListener("click", () => apply(+btn.dataset.temp, { sfx: true }));
+  });
+
+  // initialise readout to the engine's current ambient
+  apply(sandbox.ambient ?? 20);
+  // expose so Clear / scene load can reset the climate UI in sync
+  resetClimateUI = () => apply(20);
+}
+
+// Reset the climate regulator back to neutral (set by setupClimate).
+let resetClimateUI = () => {};
+
+// Close sandbox overlay panels other than the one being opened, so Climate,
+// Scenes and the Log don't stack on top of each other on small screens.
+function closeOtherSbPanels(keep) {
+  if (keep !== "scenes") $("#sb-scenes")?.classList.remove("open");
+  if (keep !== "climate") $("#sb-climate")?.classList.remove("open");
 }
 
 /* ---------------------------------------------------------------------------
@@ -911,7 +1021,7 @@ function setupScenes() {
     const open = panel.classList.toggle("open");
     toggle.classList.toggle("active", open);
     audio.sfx("click");
-    if (open) renderScenes();
+    if (open) { closeOtherSbPanels("scenes"); renderScenes(); }
   });
   close?.addEventListener("click", () => {
     panel.classList.remove("open");

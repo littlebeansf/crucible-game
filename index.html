@@ -64,6 +64,7 @@
           <button id="sb-clear" class="tool-btn">🧹 Clear</button>
           <button id="sb-eraser" class="tool-btn">🧽 Eraser</button>
           <label class="brush-ctl">Brush <input id="sb-brush" type="range" min="1" max="10" value="3" /></label>
+          <button id="sb-climate-toggle" class="tool-btn" title="Temperature regulator — heat or cool the whole sandbox">🌡️ Climate</button>
           <span id="sb-current" class="sb-current"><span class="sb-cur-ic">🎨</span> Pick a material</span>
           <button id="sb-scenes-toggle" class="tool-btn" title="Pre-built scenes to unlock and load">🗺️ Scenes</button>
           <button id="sb-log-toggle" class="tool-btn" title="Show/hide event log">📜 Log</button>
@@ -76,6 +77,29 @@
             <span class="shb-ic">💡</span>
             <span id="sb-hint-text" class="shb-text"></span>
             <button id="sb-hint-close" class="shb-close" aria-label="Dismiss hint">✕</button>
+          </div>
+          <!-- Temperature regulator (slides up from the bottom) -->
+          <div id="sb-climate" class="sb-climate">
+            <div class="clm-head">
+              <span class="clm-title">🌡️ Temperature regulator</span>
+              <button id="sb-climate-close" class="clm-close" aria-label="Close climate control">✕</button>
+            </div>
+            <div class="clm-readout">
+              <span class="clm-state" id="clm-state">Off</span>
+              <b class="clm-val" id="clm-val">20°C</b>
+            </div>
+            <input id="sb-climate-slider" class="clm-slider" type="range" min="-60" max="1600" step="5" value="20"
+                   aria-label="Ambient temperature" />
+            <div class="clm-scale"><span>❄ -60°</span><span>20°</span><span>1600° 🔥</span></div>
+            <div class="clm-presets">
+              <button class="clm-preset" data-temp="-40">❄ Freezer</button>
+              <button class="clm-preset" data-temp="5">🧊 Cold</button>
+              <button class="clm-preset" data-temp="20">🌡️ Room</button>
+              <button class="clm-preset" data-temp="120">☀️ Hot</button>
+              <button class="clm-preset" data-temp="700">🔥 Inferno</button>
+              <button class="clm-preset" data-temp="1200">🌋 Furnace</button>
+            </div>
+            <div class="clm-note">Sets the whole sandbox’s ambient temperature. Cool below freezing and exposed water turns to ice; crank the heat to boil, melt and ignite.</div>
           </div>
           <!-- Scene template picker (slides over the canvas) -->
           <div id="sb-scenes" class="sb-scenes">

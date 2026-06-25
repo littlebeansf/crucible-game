@@ -42,7 +42,26 @@ export class Sandbox {
     this.onProduce = null;
     this.producedSeen = new Set();
     this.pressureEnabled = true;
+    // --- temperature regulator ---
+    // Global ambient temperature the whole grid relaxes toward (°C). The player
+    // drives this with the Sandbox "Climate" slider: crank it below 0 and exposed
+    // water freezes; push it past boiling/melting points and things change phase.
+    // `enviroForce` is how strongly the environment pushes cells toward ambient
+    // (0 = engine ignores the regulator and uses gentle settle-to-20 behavior).
+    this.ambient = 20;
+    this.enviroForce = 0;
     this.resize();
+  }
+
+  // Set the global ambient/environment temperature (°C). Passing a value other
+  // than the neutral 20°C turns the regulator ON (enviroForce ramps up); back at
+  // 20 it eases off so the sandbox returns to its natural light cooling.
+  setAmbient(t) {
+    this.ambient = Math.max(-60, Math.min(1600, Number(t) || 0));
+    // off when neutral, otherwise stronger the further from room temperature so
+    // the regulator feels responsive (water freezes / things heat in a second or two)
+    const dist = Math.abs(this.ambient - 20);
+    this.enviroForce = dist < 1 ? 0 : Math.min(0.5, 0.12 + dist / 320);
   }
 
   // push a notable event, de-duped so we don't spam identical reactions every frame
@@ -117,14 +136,14 @@ export class Sandbox {
     const i = this.idx(x, y);
     this.grid[i] = id;
     const p = this.phys(id);
-    this.temp[i] = opts.temp ?? (p && p.temp != null ? p.temp : 20);
+    this.temp[i] = opts.temp ?? (p && p.temp != null ? p.temp : this.ambient);
     this.life[i] = opts.life ?? (p && p.lifespan ? p.lifespan : 0);
     if (!this.tint[i]) this.tint[i] = (Math.random() * 2 - 1) * 0.18;
   }
 
   clearCell(x, y) {
     const i = this.idx(x, y);
-    this.grid[i] = 0; this.temp[i] = 20; this.life[i] = 0; this.pressure[i] = 0;
+    this.grid[i] = 0; this.temp[i] = this.ambient; this.life[i] = 0; this.pressure[i] = 0;
   }
 
   paint(px, py, id) {
@@ -147,7 +166,7 @@ export class Sandbox {
   }
 
   clearAll() {
-    this.grid.fill(0); this.temp.fill(20); this.life.fill(0); this.pressure.fill(0);
+    this.grid.fill(0); this.temp.fill(this.ambient); this.life.fill(0); this.pressure.fill(0);
     this.events.length = 0; this.eventSeen.clear();
   }
 
@@ -161,7 +180,7 @@ export class Sandbox {
   // --- HUD accessors: read temperature / pressure / phase under a pixel ---
   tempAtPixel(px, py) {
     const cx = Math.floor(px / this.cell), cy = Math.floor(py / this.cell);
-    if (!this.inBounds(cx, cy)) return 20;
+    if (!this.inBounds(cx, cy)) return this.ambient;
     return this.temp[this.idx(cx, cy)];
   }
   pressureAtPixel(px, py) {
@@ -506,12 +525,24 @@ export class Sandbox {
   }
 
   diffuseHeat() {
-    // light-touch ambient cooling toward 20°C so things settle
-    const { W, H } = this;
+    // Ambient relaxation toward the regulated environment temperature. With the
+    // regulator off (enviroForce 0, ambient 20) this is the original light-touch
+    // settle toward room temperature. With it on, the whole grid is actively
+    // pushed toward `this.ambient` — empty cells (open air) track it fastest,
+    // filled materials warm/cool more slowly, hot self-heating sources (fire,
+    // lava) resist via their own temp logic.
     if ((this.frame & 3) !== 0) return; // every 4 frames
+    const amb = this.ambient;
+    const ef = this.enviroForce;
+    // base settle rates (regulator off) + extra pull from the environment
+    const emptyRate = 0.05 + ef * 4;   // air equalizes quickly
+    const solidRate = 0.01 + ef;       // materials lag behind
     for (let i = 0; i < this.temp.length; i++) {
-      if (this.grid[i] === 0) { this.temp[i] += (20 - this.temp[i]) * 0.05; continue; }
-      this.temp[i] += (20 - this.temp[i]) * 0.01;
+      if (this.grid[i] === 0) {
+        this.temp[i] += (amb - this.temp[i]) * Math.min(0.6, emptyRate);
+      } else {
+        this.temp[i] += (amb - this.temp[i]) * Math.min(0.4, solidRate);
+      }
     }
   }
 
