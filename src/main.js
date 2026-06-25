@@ -15,11 +15,13 @@ import { Achievements, TIER_LABEL } from "./achievements.js";
 import { setupSettings } from "./settings.js";
 import { AudioEngine } from "./audio.js";
 import { SCENES, sceneUnlocked, missingFor } from "./scenes.js";
+import { CreatureSystem, SPECIES, PLACEABLE, habitatOf } from "./sandbox/creatures.js";
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 
-let DB, state, sandbox, runs, achievements, slotsUI;
+let DB, state, sandbox, runs, achievements, slotsUI, creatures;
+const GOAL_PREFIX = "\u{1F3AF} "; // target emoji prefix for scene goals
 const audio = new AudioEngine();
 let mode = "forge";              // 'forge' | 'sandbox' | 'runs' | 'catalog'
 let drawerSort = "recent";
@@ -740,11 +742,30 @@ function setupSandbox() {
   // update through the normal path. Only fires for genuinely new materials.
   sandbox.onProduce = (id) => { state.discoverFromSandbox(id); };
 
-  let painting = false;
-  const paintAt = e => {
-    if (!sandbox.currentTool) return;
+  // ---- Living creature layer (agents that ride on top of the cell grid) ----
+  creatures = new CreatureSystem(sandbox);
+  if (window.__crucible) window.__crucible.creatures = creatures;
+  creatures.onChange = renderLifePanel;
+
+  // canvas pixel from a pointer event (accounts for CSS scaling of the canvas)
+  const pxFromEvent = e => {
     const r = canvas.getBoundingClientRect();
-    const px = (e.clientX - r.left), py = (e.clientY - r.top);
+    const sx = canvas.width / r.width, sy = canvas.height / r.height;
+    return { px: (e.clientX - r.left) * sx, py: (e.clientY - r.top) * sy };
+  };
+
+  let painting = false;
+  let draggingCreature = null;   // creature being repositioned via drag
+  const paintAt = e => {
+    const { px, py } = pxFromEvent(e);
+    // Life tools (tool id "creature:<kind>") spawn living creatures, not cells.
+    if (typeof sandbox.currentTool === "string" && sandbox.currentTool.startsWith("creature:")) {
+      const kind = sandbox.currentTool.slice(9);
+      const cr = creatures.spawn(kind, px, py);
+      if (cr) { creatures.select(cr); audio.sfx("click"); }
+      return;
+    }
+    if (!sandbox.currentTool) return;
     sandbox.paint(px, py, sandbox.currentTool);
   };
   // Hover tooltip: shows which element sits under the cursor.
@@ -753,8 +774,23 @@ function setupSandbox() {
   // HUD readout nodes (live temp / pressure / phase under the cursor)
   const hudTemp = $("#hud-temp"), hudPress = $("#hud-press"), hudPhase = $("#hud-phase"), hudEl = $("#hud-el");
   const updateTip = e => {
-    const r = canvas.getBoundingClientRect();
-    const px = e.clientX - r.left, py = e.clientY - r.top;
+    const { px, py } = pxFromEvent(e);
+    // when hovering a creature, show its species + live state instead of cell info
+    const hoverCr = creatures.pick(px, py);
+    if (hoverCr) {
+      hudEl.textContent = hoverCr.spec.name;
+      hudPhase.textContent = hoverCr.state;
+      if (tipId !== "cr:" + hoverCr.uid) {
+        tip.innerHTML = `<span class="tt-ic">${hoverCr.spec.emoji}</span><span class="tt-name">${hoverCr.spec.name} — ${hoverCr.state}</span>`;
+        tipId = "cr:" + hoverCr.uid;
+        tip.classList.add("show");
+      }
+      tip.style.left = (px + 14) + "px";
+      tip.style.top = (py - 14) + "px";
+      canvas.style.cursor = "pointer";
+      return;
+    }
+    canvas.style.cursor = "";
     const id = sandbox.idAtPixel(px, py);
     // ---- live HUD readout (works on empty cells too: shows ambient air) ----
     const ro = sandbox.readoutAtPixel(px, py);
@@ -822,12 +858,42 @@ function setupSandbox() {
     logEmpty();
   });
 
-  canvas.addEventListener("pointerdown", e => { painting = true; canvas.setPointerCapture(e.pointerId); paintAt(e); });
-  canvas.addEventListener("pointermove", e => { if (painting) paintAt(e); updateTip(e); });
-  canvas.addEventListener("pointerup", () => painting = false);
-  canvas.addEventListener("pointerleave", () => { painting = false; hideTip(); });
+  canvas.addEventListener("pointerdown", e => {
+    const { px, py } = pxFromEvent(e);
+    // Right-click (or ctrl/middle) removes a creature under the cursor.
+    if (e.button === 2 || e.button === 1 || e.ctrlKey) {
+      if (creatures.removeAt(px, py)) { e.preventDefault(); return; }
+    }
+    // If a creature is under the cursor and we're NOT placing a Life tool,
+    // select it and start dragging it (so the player can reposition life).
+    const isLifeTool = typeof sandbox.currentTool === "string" && sandbox.currentTool.startsWith("creature:");
+    if (!isLifeTool) {
+      const cr = creatures.pick(px, py);
+      if (cr) {
+        creatures.select(cr);
+        draggingCreature = cr;
+        canvas.setPointerCapture(e.pointerId);
+        return;
+      }
+    }
+    painting = true; canvas.setPointerCapture(e.pointerId); paintAt(e);
+  });
+  canvas.addEventListener("pointermove", e => {
+    if (draggingCreature) {
+      const { px, py } = pxFromEvent(e);
+      draggingCreature.x = px; draggingCreature.y = py;
+      draggingCreature.vx = 0; draggingCreature.vy = 0;
+      return;
+    }
+    if (painting) paintAt(e);
+    updateTip(e);
+  });
+  canvas.addEventListener("pointerup", () => { painting = false; draggingCreature = null; });
+  canvas.addEventListener("pointerleave", () => { painting = false; draggingCreature = null; hideTip(); });
+  // suppress the browser context menu so right-click can remove creatures
+  canvas.addEventListener("contextmenu", e => e.preventDefault());
 
-  $("#sb-clear").addEventListener("click", () => { sandbox.clearAll(); resetClimateUI(); });
+  $("#sb-clear").addEventListener("click", () => { sandbox.clearAll(); creatures.clear(); resetClimateUI(); });
   $("#sb-pause").addEventListener("click", () => {
     sandbox.running = !sandbox.running;
     $("#sb-pause").textContent = sandbox.running ? "⏸ Pause" : "▶ Play";
@@ -838,10 +904,12 @@ function setupSandbox() {
 
   renderQuickBar();
 
-  // render loop
+  // render loop — creatures step & draw on top of the cell grid
   const loop = () => {
     sandbox.step();
     sandbox.render();
+    if (sandbox.running) creatures.step();
+    creatures.render(sandbox.ctx);
     requestAnimationFrame(loop);
   };
   requestAnimationFrame(loop);
@@ -851,6 +919,8 @@ function setupSandbox() {
   setupScenes();
   // Temperature regulator (global ambient climate control).
   setupClimate();
+  // Live "Life" stats panel + Life palette (creature placement tools).
+  setupLife();
 }
 
 /* ---------------------------------------------------------------------------
@@ -925,6 +995,151 @@ let resetClimateUI = () => {};
 function closeOtherSbPanels(keep) {
   if (keep !== "scenes") $("#sb-scenes")?.classList.remove("open");
   if (keep !== "climate") $("#sb-climate")?.classList.remove("open");
+  if (keep !== "life") $("#sb-life")?.classList.remove("open");
+  if (keep !== "life") $("#sb-life-toggle")?.classList.remove("active");
+  if (keep !== "scenes") $("#sb-scenes-toggle")?.classList.remove("active");
+  if (keep !== "climate") $("#sb-climate-toggle")?.classList.remove("active");
+}
+
+/* ---------------------------------------------------------------------------
+   LIFE — creature placement palette + live stats panel.
+   The palette lets the player pick one of the PLACEABLE species (a "Life tool"
+   whose id is "creature:<kind>"); clicking the canvas then spawns that animal.
+   The stats panel lists every living creature with health/energy/age bars and
+   its live behaviour state, plus a population counter split by habitat.
+--------------------------------------------------------------------------- */
+function setupLife() {
+  const toggle = $("#sb-life-toggle");
+  const panel = $("#sb-life");
+  const close = $("#sb-life-close");
+  const palette = $("#sb-life-palette");
+
+  // build the placement palette once (one button per placeable species)
+  if (palette && !palette.dataset.built) {
+    palette.dataset.built = "1";
+    PLACEABLE.forEach((kind) => {
+      const spec = SPECIES[kind];
+      const b = document.createElement("button");
+      b.className = "life-tool";
+      b.dataset.kind = kind;
+      b.title = `Place ${spec.name} (${habitatOf(kind)})`;
+      b.innerHTML = `<span class="life-emoji">${spec.emoji}</span><span class="life-label">${spec.name}</span>`;
+      b.addEventListener("click", () => selectLifeTool(kind));
+      palette.appendChild(b);
+    });
+  }
+
+  toggle?.addEventListener("click", () => {
+    const open = panel.classList.toggle("open");
+    toggle.classList.toggle("active", open);
+    audio.sfx("click");
+    if (open) { closeOtherSbPanels("life"); renderLifePanel(); }
+  });
+  close?.addEventListener("click", () => {
+    panel.classList.remove("open");
+    toggle?.classList.remove("active");
+  });
+  $("#sb-life-clear")?.addEventListener("click", () => { creatures.clear(); audio.sfx("click"); });
+
+  renderLifePanel();
+}
+
+// Select a Life placement tool. Sets a synthetic "creature:<kind>" tool so the
+// canvas paint handler spawns living creatures instead of cells.
+function selectLifeTool(kind) {
+  if (mode !== "sandbox") switchMode("sandbox");
+  sandbox.currentTool = "creature:" + kind;
+  // de-highlight material quick-bar; highlight the chosen life tool
+  markActiveQuick(null);
+  $$("#sb-life-palette .life-tool").forEach(b =>
+    b.classList.toggle("active", b.dataset.kind === kind));
+  const spec = SPECIES[kind];
+  setCurrentLabel(null);
+  const node = $("#sb-current");
+  if (node && spec) node.innerHTML = `<span class="sb-cur-ic">${spec.emoji}</span> ${spec.name}`;
+  toast(`Placing: ${spec.name} — click the canvas`, spec.emoji);
+}
+
+let _lifeRaf = 0;
+// Re-render the live stats panel (throttled to once per animation frame so the
+// engine's frequent onChange calls don't thrash the DOM).
+function renderLifePanel() {
+  if (_lifeRaf) return;
+  _lifeRaf = requestAnimationFrame(() => {
+    _lifeRaf = 0;
+    _renderLifePanelNow();
+  });
+}
+
+function _renderLifePanelNow() {
+  const panel = $("#sb-life");
+  if (!panel || !creatures) return;
+  const countNode = $("#sb-life-count");
+  const censusNode = $("#sb-life-census");
+  const listNode = $("#sb-life-list");
+
+  const alive = creatures.list.filter(c => c.alive);
+  const cen = creatures.census();
+  if (countNode) countNode.textContent = String(alive.length);
+  if (censusNode) {
+    censusNode.innerHTML =
+      `<span class="life-hab" title="Land dwellers">🌳 ${cen.land}</span>` +
+      `<span class="life-hab" title="Flyers">🌤 ${cen.air}</span>` +
+      `<span class="life-hab" title="Swimmers">🌊 ${cen.water}</span>`;
+  }
+
+  // Toggle button badge so the player sees population without opening the panel
+  const badge = $("#sb-life-badge");
+  if (badge) {
+    badge.textContent = alive.length ? String(alive.length) : "";
+    badge.classList.toggle("show", alive.length > 0);
+  }
+
+  if (!listNode) return;
+  if (!alive.length) {
+    listNode.innerHTML = `<div class="life-empty">No life yet — pick a creature above and click the canvas, or load a life-populated scene. Fish need water, flyers need air. Watch them live, struggle and fade.</div>`;
+    return;
+  }
+  // sort: selected first, then most-recently spawned (highest uid)
+  const sel = creatures.selected;
+  const rows = alive.slice().sort((a, b) => {
+    if (a === sel) return -1; if (b === sel) return 1;
+    return b.uid - a.uid;
+  }).slice(0, 40); // cap visible rows for perf
+
+  const bar = (val, kind) => {
+    const f = Math.max(0, Math.min(100, val));
+    return `<div class="life-bar life-bar-${kind}"><span style="width:${f}%"></span></div>`;
+  };
+  const stateClass = (st) =>
+    /!$/.test(st) ? "danger" : /Starving|Hunting|Suffocating|Drowning|Fleeing/.test(st) ? "warn" : "ok";
+
+  listNode.innerHTML = rows.map((cr) => {
+    const agePct = Math.min(100, (cr.age / cr.maxAge) * 100);
+    const isSel = cr === sel ? " selected" : "";
+    return `
+      <div class="life-row${isSel}" data-uid="${cr.uid}">
+        <div class="life-row-head">
+          <span class="life-row-emoji">${cr.spec.emoji}</span>
+          <span class="life-row-name">${cr.spec.name}</span>
+          <span class="life-row-state ${stateClass(cr.state)}">${cr.state}</span>
+        </div>
+        <div class="life-stats">
+          <span class="life-stat">❤ ${bar(cr.health, "hp")}</span>
+          <span class="life-stat">⚡ ${bar(cr.energy, "en")}</span>
+          <span class="life-stat">⏳ ${bar(agePct, "age")}</span>
+        </div>
+      </div>`;
+  }).join("");
+
+  // click a row to focus/select that creature on the canvas
+  listNode.querySelectorAll(".life-row").forEach((row) => {
+    row.addEventListener("click", () => {
+      const uid = +row.dataset.uid;
+      const cr = creatures.list.find(c => c.uid === uid && c.alive);
+      if (cr) { creatures.select(cr); }
+    });
+  });
 }
 
 /* ---------------------------------------------------------------------------
@@ -1085,13 +1300,23 @@ function loadScene(sceneId) {
   // make sure the grid is sized (sandbox tab is active when this is reachable)
   sandbox.resize();
   sandbox.clearAll();
+  creatures?.clear();
   scene.paint(sandbox);
+  // spawn any pre-populated life for this scene
+  if (typeof scene.life === "function" && creatures) {
+    try { scene.life(sandbox, creatures); } catch (e) { console.warn("scene life spawn failed", e); }
+    renderLifePanel();
+  }
   // close the picker so the player sees the result
   $("#sb-scenes")?.classList.remove("open");
   $("#sb-scenes-toggle")?.classList.remove("active");
   audio.sfx("scene");
-  // surface a contextual hint (only suggest materials the player actually has)
-  showSceneHint(scene);
+  // surface the scene goal (puzzle/zoo scenes) or a contextual material hint
+  if (scene.goal) {
+    showHintBar(GOAL_PREFIX + scene.goal);
+  } else {
+    showSceneHint(scene);
+  }
 }
 
 function showSceneHint(scene) {
@@ -1203,14 +1428,15 @@ function renderQuickBar() {
   }
   qbar.appendChild(frag);
 
-  // keep current tool valid
+  // keep current tool valid (Life tools "creature:*" are always kept)
   const valid = new Set(mats.map(m => m.id));
-  if (sandbox.currentTool && sandbox.currentTool !== "eraser" && !valid.has(sandbox.currentTool)) {
+  const isLifeTool = typeof sandbox.currentTool === "string" && sandbox.currentTool.startsWith("creature:");
+  if (sandbox.currentTool && sandbox.currentTool !== "eraser" && !isLifeTool && !valid.has(sandbox.currentTool)) {
     sandbox.currentTool = null;
   }
   if (!sandbox.currentTool) {
     selectSandboxTool(mats[0].id, true);
-  } else {
+  } else if (!isLifeTool) {
     markActiveQuick(sandbox.currentTool);
   }
 }

@@ -67,6 +67,7 @@
           <button id="sb-climate-toggle" class="tool-btn" title="Temperature regulator — heat or cool the whole sandbox">🌡️ Climate</button>
           <span id="sb-current" class="sb-current"><span class="sb-cur-ic">🎨</span> Pick a material</span>
           <button id="sb-scenes-toggle" class="tool-btn" title="Pre-built scenes to unlock and load">🗺️ Scenes</button>
+          <button id="sb-life-toggle" class="tool-btn" title="Place living creatures and watch their stats live">🐾 Life<span id="sb-life-badge" class="sb-life-badge"></span></button>
           <button id="sb-log-toggle" class="tool-btn" title="Show/hide event log">📜 Log</button>
         </div>
         <div class="sb-wrap">
@@ -109,6 +110,19 @@
             </div>
             <div class="scn-intro">Unlock a scene by discovering all of its materials, then load it as a starting playground.</div>
             <div id="sb-scenes-list" class="scn-list"></div>
+          </div>
+          <!-- LIFE: creature placement palette + live stats panel -->
+          <div id="sb-life" class="sb-life">
+            <div class="life-head">
+              <span class="life-title">🐾 Life</span>
+              <span class="life-summary"><b id="sb-life-count">0</b> alive <span id="sb-life-census" class="life-census"></span></span>
+              <button id="sb-life-clear" class="life-clear" title="Remove all creatures">Clear life</button>
+              <button id="sb-life-close" class="life-close" aria-label="Close life panel">✕</button>
+            </div>
+            <div class="life-pal-label">Place a creature — then click the canvas. 🐟 fish need water · 🐦 flyers need air · 🧑 land animals breathe.</div>
+            <div id="sb-life-palette" class="life-palette"></div>
+            <div class="life-list-label">Living things — click a row to find it on the canvas</div>
+            <div id="sb-life-list" class="life-list"></div>
           </div>
           <!-- live temperature / pressure / phase readout near the cursor -->
           <div id="sb-hud" class="sb-hud">
