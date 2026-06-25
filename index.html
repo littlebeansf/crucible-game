@@ -65,11 +65,27 @@
           <button id="sb-eraser" class="tool-btn">🧽 Eraser</button>
           <label class="brush-ctl">Brush <input id="sb-brush" type="range" min="1" max="10" value="3" /></label>
           <span id="sb-current" class="sb-current"><span class="sb-cur-ic">🎨</span> Pick a material</span>
+          <button id="sb-scenes-toggle" class="tool-btn" title="Pre-built scenes to unlock and load">🗺️ Scenes</button>
           <button id="sb-log-toggle" class="tool-btn" title="Show/hide event log">📜 Log</button>
         </div>
         <div class="sb-wrap">
           <canvas id="sandbox-canvas"></canvas>
           <div id="sb-tooltip" class="sb-tooltip"></div>
+          <!-- contextual hint banner shown after a scene loads -->
+          <div id="sb-hint-bar" class="sb-hint-bar" hidden>
+            <span class="shb-ic">💡</span>
+            <span id="sb-hint-text" class="shb-text"></span>
+            <button id="sb-hint-close" class="shb-close" aria-label="Dismiss hint">✕</button>
+          </div>
+          <!-- Scene template picker (slides over the canvas) -->
+          <div id="sb-scenes" class="sb-scenes">
+            <div class="scn-head">
+              <span>🗺️ Scene templates</span>
+              <button id="sb-scenes-close" title="Close">✕</button>
+            </div>
+            <div class="scn-intro">Unlock a scene by discovering all of its materials, then load it as a starting playground.</div>
+            <div id="sb-scenes-list" class="scn-list"></div>
+          </div>
           <!-- live temperature / pressure / phase readout near the cursor -->
           <div id="sb-hud" class="sb-hud">
             <div class="hud-row"><span class="hud-k">🌡 Temp</span><b id="hud-temp">20°C</b></div>
@@ -263,6 +279,20 @@
         </div>
         <div class="ac-hint">Drag for a custom hue.</div>
       </div>
+    </div>
+
+    <div class="set-group">
+      <div class="set-label">Sound</div>
+      <div class="snd-row">
+        <button id="snd-music" class="snd-toggle" aria-pressed="true"><span class="snd-ic">🎵</span> Music</button>
+        <button id="snd-sfx" class="snd-toggle" aria-pressed="true"><span class="snd-ic">🔊</span> Sound FX</button>
+      </div>
+      <div class="snd-vol-row">
+        <span class="snd-vic">🔉</span>
+        <input id="snd-vol" class="snd-vol" type="range" min="0" max="100" value="70" aria-label="Master volume" />
+        <span id="snd-vol-label" class="snd-vlabel">70%</span>
+      </div>
+      <div class="set-hint">Ambient music and reaction sounds are generated live — no downloads.</div>
     </div>
 
     <div class="set-foot">CRUCIBLE · your progress is saved on this device.</div>

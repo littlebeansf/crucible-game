@@ -795,8 +795,83 @@ body.catalog-mode .drawer-toggle { display: none !important; }
 .ac-hint { font-size: 11.5px; color: var(--muted); margin-top: 8px; }
 .set-foot { margin-top: auto; padding: 16px 18px; font-size: 11.5px; color: var(--muted); text-align: center; }
 
+/* ---- sound controls (settings panel) ---- */
+.snd-row { display: flex; gap: 8px; }
+.snd-toggle { flex: 1; display: flex; align-items: center; justify-content: center; gap: 8px;
+  background: var(--bg2); border: 1px solid var(--line); color: var(--muted); padding: 11px 10px;
+  border-radius: 12px; font-size: 13.5px; font-weight: 700; cursor: pointer; transition: .15s; }
+.snd-toggle .snd-ic { font-size: 16px; }
+.snd-toggle:hover { color: var(--text); border-color: var(--accent); }
+.snd-toggle.on { color: var(--accent-ink); background: var(--accent); border-color: var(--accent); }
+.snd-vol-row { display: flex; align-items: center; gap: 11px; margin-top: 12px;
+  background: var(--bg2); border: 1px solid var(--line); border-radius: 12px; padding: 11px 14px; }
+.snd-vic { font-size: 16px; flex: 0 0 auto; }
+.snd-vol { flex: 1 1 0; appearance: none; height: 8px; border-radius: 6px; cursor: pointer;
+  background: linear-gradient(90deg, var(--accent-soft), var(--accent)); }
+.snd-vol::-webkit-slider-thumb { appearance: none; width: 18px; height: 18px; border-radius: 50%;
+  background: #fff; border: 3px solid var(--accent); cursor: pointer; box-shadow: 0 2px 6px rgba(0,0,0,.4); }
+.snd-vol::-moz-range-thumb { width: 16px; height: 16px; border-radius: 50%; background: #fff;
+  border: 3px solid var(--accent); cursor: pointer; }
+.snd-vlabel { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; min-width: 34px; text-align: right; }
+
+/* ---- sandbox: scene templates panel (slides over the canvas) ---- */
+.sb-scenes { position: absolute; top: 0; left: 0; bottom: 0; width: min(340px, 86%); z-index: 10;
+  background: rgba(13,17,24,.96); border-right: 1px solid var(--line); box-shadow: 10px 0 30px rgba(0,0,0,.5);
+  display: flex; flex-direction: column; transform: translateX(-101%);
+  transition: transform .28s cubic-bezier(.2,.9,.3,1); backdrop-filter: blur(8px); }
+[data-theme="light"] .sb-scenes { background: rgba(255,255,255,.97); }
+.sb-scenes.open { transform: translateX(0); }
+.scn-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px;
+  border-bottom: 1px solid var(--line); font-weight: 800; font-size: 14px; letter-spacing: .02em; }
+.scn-head button { background: var(--panel2); border: 1px solid var(--line); color: var(--muted);
+  width: 28px; height: 28px; border-radius: 8px; cursor: pointer; font-size: 14px; transition: .15s; }
+.scn-head button:hover { color: var(--text); border-color: var(--accent); }
+.scn-intro { padding: 11px 14px 4px; font-size: 12px; color: var(--muted); line-height: 1.5; }
+.scn-list { padding: 10px 12px 16px; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 10px; }
+.scn-list::-webkit-scrollbar { width: 8px; }
+.scn-list::-webkit-scrollbar-thumb { background: var(--line); border-radius: 8px; }
+.scn-card { background: var(--bg2); border: 1px solid var(--line); border-radius: 14px; padding: 12px 13px;
+  transition: .18s; }
+.scn-card.unlocked { border-left: 3px solid var(--accent); }
+.scn-card.locked { opacity: .82; }
+.scn-card.unlocked:hover { transform: translateY(-2px); box-shadow: var(--shadow); border-color: var(--accent); }
+.scn-top { display: flex; align-items: flex-start; gap: 11px; }
+.scn-emoji { font-size: 28px; line-height: 1; flex: 0 0 auto;
+  filter: drop-shadow(0 1px 3px rgba(0,0,0,.45)); }
+.scn-card.locked .scn-emoji { filter: grayscale(.7) drop-shadow(0 1px 3px rgba(0,0,0,.4)); opacity: .8; }
+.scn-name { font-weight: 800; font-size: 14.5px; color: var(--text); }
+.scn-blurb { font-size: 11.5px; color: var(--muted); line-height: 1.45; margin-top: 2px; }
+.scn-reqs { display: flex; flex-wrap: wrap; gap: 5px; margin: 10px 0; }
+.scn-req { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600;
+  padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); white-space: nowrap; }
+.scn-req.have { color: var(--text); background: var(--accent-soft); border-color: var(--accent-line); }
+.scn-req.need { color: var(--muted); background: transparent; opacity: .72; }
+.scn-actions { margin-top: 2px; }
+.scn-load { width: 100%; background: var(--accent); color: var(--accent-ink); border: none; font-weight: 800;
+  font-size: 13px; padding: 9px; border-radius: 10px; cursor: pointer; transition: .15s; }
+.scn-load:hover { filter: brightness(1.06); transform: translateY(-1px); }
+.scn-locked-note { font-size: 11.5px; color: var(--muted); text-align: center; padding: 6px;
+  background: var(--panel); border: 1px dashed var(--line); border-radius: 9px; }
+
+/* ---- sandbox: contextual hint banner ---- */
+.sb-hint-bar { position: absolute; left: 50%; bottom: 14px; transform: translate(-50%, 14px); z-index: 8;
+  display: flex; align-items: center; gap: 10px; max-width: min(560px, 92%);
+  background: rgba(13,17,24,.95); border: 1px solid var(--accent-line); border-radius: 13px;
+  padding: 10px 12px 10px 14px; box-shadow: var(--shadow); backdrop-filter: blur(8px);
+  opacity: 0; transition: opacity .3s, transform .3s; pointer-events: none; }
+[data-theme="light"] .sb-hint-bar { background: rgba(255,255,255,.97); }
+.sb-hint-bar.show { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
+.shb-ic { font-size: 17px; flex: 0 0 auto; }
+.shb-text { font-size: 12.5px; color: var(--text); line-height: 1.4; }
+.shb-close { flex: 0 0 auto; background: var(--panel2); border: 1px solid var(--line); color: var(--muted);
+  width: 24px; height: 24px; border-radius: 7px; cursor: pointer; font-size: 12px; transition: .15s; }
+.shb-close:hover { color: var(--text); border-color: var(--accent); }
+
 /* mobile: panels go full-width-ish */
 @media (max-width: 560px) {
   .side-panel { width: 100%; max-width: 100%; border-left: none; }
   .sheet-props { grid-template-columns: 1fr 1fr; }
+  .sb-scenes { width: min(340px, 94%); }
+  .sb-hint-bar { bottom: 10px; padding: 9px 10px 9px 12px; }
+  .shb-text { font-size: 12px; }
 }

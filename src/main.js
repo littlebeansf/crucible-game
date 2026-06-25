@@ -13,11 +13,14 @@ import { slots } from "./slots.js";
 import { setupSlots as setupSlotsUI } from "./slots-ui.js";
 import { Achievements, TIER_LABEL } from "./achievements.js";
 import { setupSettings } from "./settings.js";
+import { AudioEngine } from "./audio.js";
+import { SCENES, sceneUnlocked, missingFor } from "./scenes.js";
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 
 let DB, state, sandbox, runs, achievements, slotsUI;
+const audio = new AudioEngine();
 let mode = "forge";              // 'forge' | 'sandbox' | 'runs' | 'catalog'
 let drawerSort = "recent";
 let drawerQuery = "";
@@ -48,6 +51,7 @@ async function boot() {
   setupTopbar();
   setupAchievementsPanel();
   setupSettings(storage);
+  setupAudio();
   setupSlots();
   renderDrawer();
   updateStats();
@@ -59,15 +63,19 @@ async function boot() {
   state.on(evt => {
     if (evt.type === "discover") {
       onDiscover(evt);
+      // discovery chime (Sandbox-produced uses a softer reaction ping)
+      audio.sfx(evt.from === "sandbox" ? "reaction" : "discover");
       // a newly discovered physical material should appear in the sandbox bar
       if (state.el(evt.id)?.phys) renderQuickBar();
+      // a new material may unlock a scene — refresh the scene list
+      renderScenes();
       achievements.evaluate();
       // keep the active slot's discovered count fresh if the panel is open
       slotsUI?.render();
     }
     if (evt.type === "discover" && mode === "catalog") renderCatalog();
     if (evt.type === "reset" || evt.type === "import") {
-      clearForge(); renderDrawer(); renderQuickBar(); updateStats();
+      clearForge(); renderDrawer(); renderQuickBar(); renderScenes(); updateStats();
       if (mode === "catalog") renderCatalog();
       achievements.evaluate();
       renderAchievementsPanel();
@@ -601,6 +609,9 @@ function tryCombineAt(rec) {
        { transform: `translate(${targetX - rec.x}px, ${targetY - rec.y}px) scale(.6)`, opacity: .4 }],
       { duration: 130, easing: "cubic-bezier(.4,0,.2,1)", fill: "forwards" }
     );
+    // new discoveries get the "discover" chime via the state event; an already-
+    // known result just gets a soft combine confirm here.
+    if (!out.isNew) audio.sfx("combine");
     anim.onfinish = () => {
       flash(cx, cy, out.isNew);
       removeItem(rec); removeItem(partner);
@@ -610,6 +621,7 @@ function tryCombineAt(rec) {
     // no recipe: little shake
     rec.node.animate([{ transform: "translateX(0)" }, { transform: "translateX(-6px)" }, { transform: "translateX(6px)" }, { transform: "translateX(0)" }], { duration: 220 });
     puff(cx, cy, "✕");
+    audio.sfx("error");
   }
 }
 
@@ -740,6 +752,7 @@ function setupSandbox() {
   // ---- Event log: phase changes & reactions pushed from the engine ----
   const logList = $("#sb-log-list");
   const LOG_CAP = 60;
+  let lastSfxAt = 0; // throttle reaction SFX so rapid events don't pile up
   sandbox.onEvent = (evt) => {
     const empty = logList.querySelector(".log-empty");
     if (empty) empty.remove();
@@ -749,6 +762,16 @@ function setupSandbox() {
     li.innerHTML = `<span class="log-ic">${icon}</span><span class="log-txt">${evt.text}</span>`;
     logList.insertBefore(li, logList.firstChild);
     while (logList.children.length > LOG_CAP) logList.removeChild(logList.lastChild);
+    // throttled reaction/phase SFX (max ~6/sec) so it stays pleasant
+    const now = performance.now();
+    if (now - lastSfxAt > 160) {
+      lastSfxAt = now;
+      const txt = (evt.text || "").toLowerCase();
+      if (evt.kind === "phase" && /(freez|ice|frost|solid)/.test(txt)) audio.sfx("freeze");
+      else if (/(boil|steam|evapor)/.test(txt)) audio.sfx("bubble");
+      else if (/(burn|fire|melt|lava|smoke)/.test(txt)) audio.sfx("sizzle");
+      else audio.sfx("reaction");
+    }
     // feed achievements (phase change / reaction unlocks)
     if (achievements) achievements.noteSandboxEvent(evt.kind);
   };
@@ -789,6 +812,209 @@ function setupSandbox() {
   };
   requestAnimationFrame(loop);
   window.addEventListener("resize", () => { if (mode === "sandbox") sandbox.resize(); });
+
+  // Scenes UI lives inside the sandbox view.
+  setupScenes();
+}
+
+/* ---------------------------------------------------------------------------
+   AUDIO — music + SFX controls (Web Audio synth, no asset files)
+--------------------------------------------------------------------------- */
+const SND_MUTED_KEY = "crucible.snd.muted";
+const SND_MUSIC_KEY = "crucible.snd.music";
+const SND_VOL_KEY   = "crucible.snd.vol";
+
+function setupAudio() {
+  // restore prefs
+  const savedMuted = storage.get(SND_MUTED_KEY) === "1";
+  const savedMusic = storage.get(SND_MUSIC_KEY);
+  const rawVol = storage.get(SND_VOL_KEY);            // null when unset
+  const savedVol = rawVol == null ? NaN : Number(rawVol);
+  const musicOn = savedMusic == null ? true : savedMusic === "1";
+  const vol = Number.isFinite(savedVol) ? savedVol / 100 : 0.7;
+
+  audio._muted = savedMuted;
+  audio._music = musicOn;
+  audio._vol = vol;
+
+  // Web Audio must be created/resumed after a user gesture. Lazily start on
+  // the first pointer/key interaction anywhere in the app.
+  const kick = () => {
+    audio.init();
+    audio.resume();
+    if (audio.musicOn()) audio.setMusic(true);
+    window.removeEventListener("pointerdown", kick);
+    window.removeEventListener("keydown", kick);
+  };
+  window.addEventListener("pointerdown", kick, { once: false });
+  window.addEventListener("keydown", kick, { once: false });
+
+  const musicBtn = $("#snd-music");
+  const sfxBtn = $("#snd-sfx");
+  const volSlider = $("#snd-vol");
+  const volLabel = $("#snd-vol-label");
+
+  const syncBtns = () => {
+    if (musicBtn) {
+      musicBtn.classList.toggle("on", audio.musicOn());
+      musicBtn.setAttribute("aria-pressed", String(audio.musicOn()));
+    }
+    if (sfxBtn) {
+      const sfxOn = !audio.isMuted();
+      sfxBtn.classList.toggle("on", sfxOn);
+      sfxBtn.setAttribute("aria-pressed", String(sfxOn));
+    }
+    if (volSlider) volSlider.value = String(Math.round(audio.volume() * 100));
+    if (volLabel) volLabel.textContent = `${Math.round(audio.volume() * 100)}%`;
+  };
+
+  musicBtn?.addEventListener("click", () => {
+    audio.init();
+    audio.setMusic(!audio.musicOn());
+    storage.set(SND_MUSIC_KEY, audio.musicOn() ? "1" : "0");
+    audio.sfx("click");
+    syncBtns();
+  });
+
+  // "Sound FX" toggle doubles as master mute (music routes through master too,
+  // but we keep the music bed independently controllable). Muting kills all.
+  sfxBtn?.addEventListener("click", () => {
+    audio.init();
+    audio.setMuted(!audio.isMuted());
+    storage.set(SND_MUTED_KEY, audio.isMuted() ? "1" : "0");
+    if (!audio.isMuted()) audio.sfx("click");
+    syncBtns();
+  });
+
+  volSlider?.addEventListener("input", (e) => {
+    audio.init();
+    audio.setVolume(Number(e.target.value) / 100);
+    if (volLabel) volLabel.textContent = `${e.target.value}%`;
+  });
+  volSlider?.addEventListener("change", () => {
+    storage.set(SND_VOL_KEY, String(Math.round(audio.volume() * 100)));
+  });
+
+  syncBtns();
+}
+
+/* ---------------------------------------------------------------------------
+   SCENES — pre-built sandbox templates, unlock-gated by discovered materials
+--------------------------------------------------------------------------- */
+let hintTimer = null;
+
+function setupScenes() {
+  const toggle = $("#sb-scenes-toggle");
+  const panel = $("#sb-scenes");
+  const close = $("#sb-scenes-close");
+  toggle?.addEventListener("click", () => {
+    const open = panel.classList.toggle("open");
+    toggle.classList.toggle("active", open);
+    audio.sfx("click");
+    if (open) renderScenes();
+  });
+  close?.addEventListener("click", () => {
+    panel.classList.remove("open");
+    toggle?.classList.remove("active");
+  });
+  $("#sb-hint-close")?.addEventListener("click", () => hideHint());
+  renderScenes();
+}
+
+function matChip(id) {
+  const el = DB.elements[id];
+  const ic = el ? emojiFor(el) : "❓";
+  const nm = el ? el.name : id;
+  return { ic, nm };
+}
+
+function renderScenes() {
+  const list = $("#sb-scenes-list");
+  if (!list) return;
+  // unlocked first, then locked sorted by how close (fewest missing) they are
+  const decorated = SCENES.map((s) => {
+    const missing = missingFor(s, state);
+    return { s, unlocked: missing.length === 0, missing };
+  });
+  decorated.sort((a, b) => {
+    if (a.unlocked !== b.unlocked) return a.unlocked ? -1 : 1;
+    return a.missing.length - b.missing.length;
+  });
+
+  list.innerHTML = decorated.map(({ s, unlocked, missing }) => {
+    const reqChips = s.requires.map((id) => {
+      const { ic, nm } = matChip(id);
+      const have = state.isDiscovered(id);
+      return `<span class="scn-req ${have ? "have" : "need"}" title="${nm}${have ? " — discovered" : " — not yet discovered"}">${ic} ${nm}</span>`;
+    }).join("");
+    const action = unlocked
+      ? `<button class="scn-load" data-scene="${s.id}">Load scene</button>`
+      : `<div class="scn-locked-note">🔒 Discover ${missing.length} more material${missing.length > 1 ? "s" : ""} to unlock</div>`;
+    return `
+      <div class="scn-card ${unlocked ? "unlocked" : "locked"}">
+        <div class="scn-top">
+          <span class="scn-emoji">${s.emoji}</span>
+          <div class="scn-meta">
+            <div class="scn-name">${s.name}</div>
+            <div class="scn-blurb">${s.blurb}</div>
+          </div>
+        </div>
+        <div class="scn-reqs">${reqChips}</div>
+        <div class="scn-actions">${action}</div>
+      </div>`;
+  }).join("");
+
+  list.querySelectorAll(".scn-load").forEach((b) =>
+    b.addEventListener("click", () => loadScene(b.dataset.scene))
+  );
+}
+
+function loadScene(sceneId) {
+  const scene = SCENES.find((s) => s.id === sceneId);
+  if (!scene || !sceneUnlocked(scene, state)) { audio.sfx("error"); return; }
+  // make sure the grid is sized (sandbox tab is active when this is reachable)
+  sandbox.resize();
+  sandbox.clearAll();
+  scene.paint(sandbox);
+  // close the picker so the player sees the result
+  $("#sb-scenes")?.classList.remove("open");
+  $("#sb-scenes-toggle")?.classList.remove("active");
+  audio.sfx("scene");
+  // surface a contextual hint (only suggest materials the player actually has)
+  showSceneHint(scene);
+}
+
+function showSceneHint(scene) {
+  const usable = (scene.hints || []).filter((h) => state.isDiscovered(h.id) || !DB.elements[h.id]);
+  // prefer hints whose suggested material the player owns; fall back to first
+  const pool = usable.length ? usable : (scene.hints || []);
+  if (!pool.length) return;
+  const h = pool[Math.floor(Math.random() * pool.length)];
+  const { ic, nm } = matChip(h.id);
+  const owned = state.isDiscovered(h.id);
+  const text = owned
+    ? `Tip: ${h.text} — grab ${ic} ${nm} from the bar below.`
+    : `Goal: discover ${ic} ${nm} — then ${h.text.charAt(0).toLowerCase() + h.text.slice(1)}.`;
+  showHintBar(text);
+}
+
+function showHintBar(text) {
+  const bar = $("#sb-hint-bar");
+  const txt = $("#sb-hint-text");
+  if (!bar || !txt) return;
+  txt.textContent = text;
+  bar.hidden = false;
+  bar.classList.add("show");
+  clearTimeout(hintTimer);
+  hintTimer = setTimeout(hideHint, 9000);
+}
+
+function hideHint() {
+  const bar = $("#sb-hint-bar");
+  if (!bar) return;
+  bar.classList.remove("show");
+  clearTimeout(hintTimer);
+  setTimeout(() => { if (!bar.classList.contains("show")) bar.hidden = true; }, 300);
 }
 
 // Active sandbox category filter ("all" or a category id). Lets the player
@@ -1198,6 +1424,7 @@ let achToastQueue = [], achToastBusy = false;
 function onAchievementUnlock(a) {
   // refresh panel & badge live
   renderAchievementsPanel();
+  audio.sfx("achievement");
   achToastQueue.push(a);
   if (!achToastBusy) drainAchToast();
 }
