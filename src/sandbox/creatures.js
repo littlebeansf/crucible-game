@@ -623,12 +623,12 @@ export class CreatureSystem {
   // Water and empty air are passable. Used by swimmers so a beached/flopping
   // fish rests on top of sand instead of sinking through the world.
   _moveCollideSolid(cr) {
-    const step = this.sb.cell;
     const half = (cr.spec.size || 16) * 0.4; // body half-extent toward leading edge
+    const hit = { x: false, y: false };
     // X axis
     if (cr.vx !== 0) {
       const edge = cr.x + Math.sign(cr.vx) * half;
-      if (this.isSolid(edge + cr.vx, cr.y)) { cr.vx = 0; }
+      if (this.isSolid(edge + cr.vx, cr.y)) { cr.vx = 0; hit.x = true; }
       else cr.x += cr.vx;
     }
     // Y axis
@@ -640,9 +640,10 @@ export class CreatureSystem {
           const surf = this.surfaceY(cr.x, cr.y - half);
           if (surf != null) cr.y = surf - half;
         }
-        cr.vy = 0;
+        cr.vy = 0; hit.y = true;
       } else cr.y += cr.vy;
     }
+    return hit;
   }
 
   _fly(cr, W, H) {
@@ -687,44 +688,56 @@ export class CreatureSystem {
     // never let a flyer cross the very top edge of the room
     if (cr.y < bandTop * 0.6 && cr.vy < 0) cr.vy = 0;
     this._limit(cr, cr.spec.flutter ? 1.5 : 1.9);
-    cr.x += cr.vx; cr.y += cr.vy;
+    // Fliers must respect SOLID walls/floors/ceilings — birds & butterflies can no
+    // longer phase through buildings. When a flier bumps a wall, kill that axis'
+    // velocity and steer it back toward open air so it doesn't pin against the
+    // surface forever.
+    const blocked = this._moveCollideSolid(cr);
+    if (blocked.x) { cr.heading = -cr.heading; cr.headingCD = 30 + Math.floor(Math.random() * 40); }
+    if (blocked.y && cr.vy === 0) { cr.cruiseY = cr.y - (cr.spec.size || 16); } // drift away from ceiling/floor it hit
+  }
+
+  // Directional-persistence stroll: commit to one heading for a stretch of frames
+  // and walk in a STRAIGHT line, rather than re-rolling vx every tick (which
+  // produced jittery, twitchy wander that averaged to zero displacement).
+  // Occasionally pause, then resume — sometimes reversing direction.
+  _wanderHeading(cr, walkState = "Walking") {
+    if (--cr.headingCD <= 0) {
+      const r = Math.random();
+      if (r < 0.30) { cr.heading = 0; cr.headingCD = 30 + Math.floor(Math.random() * 50); }      // pause/stand
+      else if (r < 0.50) { cr.heading = -cr.heading || (Math.random() < 0.5 ? -1 : 1); cr.headingCD = 70 + Math.floor(Math.random() * 110); } // reverse
+      else { cr.heading = Math.random() < 0.5 ? -1 : 1; cr.headingCD = 70 + Math.floor(Math.random() * 130); }   // new direction
+    }
+    if (cr.heading === 0) {
+      cr.state = !/!$/.test(cr.state) ? "Standing" : cr.state; // settle to a stop
+    } else {
+      cr.vx += cr.heading * 0.10; // steady push in the committed direction
+      if (!/!$/.test(cr.state)) cr.state = walkState;
+    }
   }
 
   _walk(cr, W, H) {
     const flee = this._fleeVector(cr, 4);
     cr.vy += 0.5; // gravity
     if (flee) { cr.vx += flee.fx * 0.8; cr.state = "Fleeing danger!"; }
-    else {
-      // dogs follow nearest human
-      if (cr.spec.follows) {
-        const tgt = this.nearestOf(cr, o => o.kind === cr.spec.follows, 200);
-        if (tgt && Math.abs(tgt.x - cr.x) > 18) { cr.vx += Math.sign(tgt.x - cr.x) * 0.14; cr.state = "Following"; }
-        else { cr.vx += (Math.random() * 2 - 1) * 0.1; if (cr.state === "Idle" || cr.state === "Following") cr.state = "Wandering"; }
-      } else {
-        // Directional persistence: commit to one heading for a stretch of frames
-        // and stroll in a STRAIGHT line, rather than re-rolling vx every tick
-        // (which produced the old jittery, twitchy wander). Occasionally pause to
-        // stand still, then resume — sometimes reversing direction.
-        if (--cr.headingCD <= 0) {
-          const r = Math.random();
-          if (r < 0.30) { cr.heading = 0; cr.headingCD = 30 + Math.floor(Math.random() * 50); }      // pause/stand
-          else if (r < 0.50) { cr.heading = -cr.heading || (Math.random() < 0.5 ? -1 : 1); cr.headingCD = 70 + Math.floor(Math.random() * 110); } // reverse
-          else { cr.heading = Math.random() < 0.5 ? -1 : 1; cr.headingCD = 70 + Math.floor(Math.random() * 130); }   // new direction
-        }
-        if (cr.heading === 0) {
-          cr.state = !/!$/.test(cr.state) ? "Standing" : cr.state; // settle to a stop
-        } else {
-          cr.vx += cr.heading * 0.10; // steady push in the committed direction
-          if (!/!$/.test(cr.state)) cr.state = "Walking";
-        }
-      }
+    else if (cr.spec.follows) {
+      // dogs follow nearest human; when none is around they roam with the same
+      // committed-heading stroll as everyone else (so they don't twitch in place).
+      const tgt = this.nearestOf(cr, o => o.kind === cr.spec.follows, 200);
+      if (tgt && Math.abs(tgt.x - cr.x) > 18) { cr.vx += Math.sign(tgt.x - cr.x) * 0.16; cr.state = "Following"; }
+      else this._wanderHeading(cr, "Wandering");
+    } else {
+      this._wanderHeading(cr, "Walking");
     }
     cr.vx *= 0.85;
     // clamp horizontal stroll speed only; let gravity build a real fall speed so
     // creatures drop onto the floor instead of drifting down at a crawl.
     if (cr.vx > 1.6) cr.vx = 1.6; else if (cr.vx < -1.6) cr.vx = -1.6;
     if (cr.vy > 6) cr.vy = 6;
-    cr.x += cr.vx; cr.y += cr.vy;
+    // Move with SOLID collision so walkers can't stroll THROUGH walls/rocks —
+    // they bump and turn around. Then settle feet onto the surface below.
+    const blocked = this._moveCollideSolid(cr);
+    if (blocked.x) { cr.heading = -cr.heading || (Math.random() < 0.5 ? -1 : 1); cr.headingCD = 40 + Math.floor(Math.random() * 70); }
     // resolve ground: rest the creature's FEET on the sand/solid surface so it
     // stands on top of the 2-D room floor instead of sinking into it.
     this._settleOnSurface(cr);
@@ -740,28 +753,47 @@ export class CreatureSystem {
       cr.vx *= 0.9; cr.vy *= 0.9;
       if (!/!$/.test(cr.state)) cr.state = cr.kind === "duck" ? "Paddling" : "Swimming";
       this._limit(cr, 1.4);
+      // paddle with solid collision so amphibians can't swim through pool walls
+      this._moveCollideSolid(cr);
+      return;
     } else {
       cr.vy += 0.5; // gravity on land
+      // "grounded" must be sensed from the creature's FEET, not its centre — a
+      // settled body sits ~one cell above the floor, so groundBelow(centre) reads
+      // empty and frogs/ducks would never register as standing. Check just below
+      // the feet instead so hop/waddle logic actually fires.
+      const foot = (cr.spec.size || 16) * 0.42;
+      const grounded = this.groundBelow(cr.x, cr.y) || this.isSolid(cr.x, cr.y + foot + 2);
       if (flee) { cr.vx += flee.fx * 0.8; }
       else if (cr.spec.hops) {
-        // frogs: occasional hop
-        if (this.groundBelow(cr.x, cr.y) && Math.random() < 0.04) {
-          cr.vy = -3.2; cr.vx = (Math.random() * 2 - 1) * 2; cr.state = "Hopping";
-        } else if (this.groundBelow(cr.x, cr.y)) { cr.vx *= 0.6; if (!/!$/.test(cr.state)) cr.state = "Resting"; }
+        // frogs: occasional hop in a committed direction, then a short rest
+        if (grounded && Math.random() < 0.045) {
+          if (--cr.headingCD <= 0 || cr.heading === 0) { cr.heading = Math.random() < 0.5 ? -1 : 1; cr.headingCD = 1; }
+          cr.vy = -3.2; cr.vx = cr.heading * (1.4 + Math.random() * 0.9); cr.state = "Hopping";
+        } else if (grounded) { cr.vx *= 0.6; if (!/!$/.test(cr.state)) cr.state = "Resting"; }
       } else {
-        cr.vx += (Math.random() * 2 - 1) * 0.12;
-        if (!/!$/.test(cr.state)) cr.state = "Waddling";
+        // ducks (and other amphibian walkers): commit to a heading and waddle in
+        // a STRAIGHT line instead of twitching in place (random vx averaged to 0).
+        if (--cr.headingCD <= 0) {
+          const r = Math.random();
+          if (r < 0.25) { cr.heading = 0; cr.headingCD = 30 + Math.floor(Math.random() * 40); }          // pause
+          else if (r < 0.45) { cr.heading = -cr.heading || (Math.random() < 0.5 ? -1 : 1); cr.headingCD = 60 + Math.floor(Math.random() * 90); } // reverse
+          else { cr.heading = Math.random() < 0.5 ? -1 : 1; cr.headingCD = 60 + Math.floor(Math.random() * 110); }    // new heading
+        }
+        if (cr.heading === 0) { if (!/!$/.test(cr.state)) cr.state = "Standing"; }
+        else { cr.vx += cr.heading * 0.12; if (!/!$/.test(cr.state)) cr.state = "Waddling"; }
       }
       cr.vx *= 0.85;
       // clamp horizontal speed only; allow a real gravity fall to the floor
       if (cr.vx > 1.8) cr.vx = 1.8; else if (cr.vx < -1.8) cr.vx = -1.8;
       if (cr.vy > 6) cr.vy = 6;
-      cr.x += cr.vx; cr.y += cr.vy;
+      // move with solid collision (walls/rocks block & turn the creature)
+      const blocked = this._moveCollideSolid(cr);
+      if (blocked.x) { cr.heading = -cr.heading || (Math.random() < 0.5 ? -1 : 1); cr.headingCD = 40 + Math.floor(Math.random() * 60); }
       // rest feet on the surface (skip while mid-hop / rising)
       if (cr.vy >= -0.5) this._settleOnSurface(cr);
       return;
     }
-    cr.x += cr.vx; cr.y += cr.vy;
   }
 
   _limit(cr, max) {

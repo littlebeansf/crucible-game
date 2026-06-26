@@ -1132,6 +1132,7 @@ function setupSandbox() {
   };
 
   let painting = false;
+  let paintingLife = false;      // true when the active gesture is a Life (creature) tool — spawn once per gesture, never on move
   let draggingCreature = null;   // creature being repositioned via drag
   // --- shape tool state: "brush" (free paint), "box", or "circle" ---
   let shapeMode = "brush";
@@ -1309,6 +1310,9 @@ function setupSandbox() {
       canvas.setPointerCapture(e.pointerId);
       return;
     }
+    // A Life tool spawns exactly ONE creature per pointerdown; we flag the gesture
+    // so pointermove does not spawn duplicates as the cursor drifts.
+    paintingLife = isLifeTool;
     painting = true; canvas.setPointerCapture(e.pointerId); paintAt(e);
   });
   canvas.addEventListener("pointermove", e => {
@@ -1325,7 +1329,7 @@ function setupSandbox() {
       updateTip(e);
       return;
     }
-    if (painting) paintAt(e);
+    if (painting && !paintingLife) paintAt(e);
     updateTip(e);
   });
   const finishShape = (e) => {
@@ -1343,9 +1347,9 @@ function setupSandbox() {
   };
   canvas.addEventListener("pointerup", (e) => {
     finishShape(e);
-    painting = false; draggingCreature = null;
+    painting = false; paintingLife = false; draggingCreature = null;
   });
-  canvas.addEventListener("pointerleave", () => { painting = false; draggingCreature = null; shapeStart = null; clearShapePreview(); hideTip(); });
+  canvas.addEventListener("pointerleave", () => { painting = false; paintingLife = false; draggingCreature = null; shapeStart = null; clearShapePreview(); hideTip(); });
 
   // --- shape tool toolbar wiring ---
   const shapeBtns = $$("#sb-shape-tools .shape-btn[data-shape]");

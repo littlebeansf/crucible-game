@@ -188,6 +188,8 @@ export class Sandbox {
   clearCell(x, y) {
     const i = this.idx(x, y);
     this.grid[i] = 0; this.temp[i] = this.ambient; this.life[i] = 0; this.pressure[i] = 0;
+    if (this._blasted) this._blasted.delete(i);
+    if (this._blastPower) this._blastPower.delete(i);
   }
 
   paint(px, py, id) {
@@ -218,6 +220,8 @@ export class Sandbox {
     this.grid.fill(0); this.temp.fill(this.ambient); this.life.fill(0); this.pressure.fill(0);
     this.events.length = 0; this.eventSeen.clear();
     this.fx.length = 0; this.weather = null;
+    if (this._blasted) this._blasted.clear();
+    if (this._blastPower) this._blastPower.clear();
   }
 
   // Drop a solid/powder residue (e.g. salt from evaporating saltwater) into the
@@ -733,21 +737,119 @@ export class Sandbox {
     if (Math.random()<0.6) this.tryRiseInto(x,y,x,y-1,0.2);
   }
 
+  // A blast centred on (x,y). Radius and force scale with the source element's
+  // authored `power` (bigger bomb = bigger crater). A single detonation now does
+  // the WHOLE blast in one shot (carves a crater, flings/clears matter, ignites
+  // the flammable, chain-detonates other explosives, and dumps a huge amount of
+  // heat into the temperature grid) instead of nibbling 1 cell-radius per frame.
   explode(x, y, id, p) {
-    const R = 4;
-    for (let dy=-R; dy<=R; dy++) for (let dx=-R; dx<=R; dx++) {
-      if (dx*dx+dy*dy > R*R) continue;
-      const nx=x+dx, ny=y+dy;
-      if (!this.inBounds(nx,ny)) continue;
-      const nid = this.grid[this.idx(nx,ny)];
-      const np = this.phys(nid);
-      if (!nid) { if (Math.random()<0.25 && this.has("fire")) { this.set(nx,ny,"fire"); this.produced("fire"); } continue; }
-      if (np && (np.state==="powder"||np.state==="liquid") && Math.random()<0.5) this.clearCell(nx,ny);
-      if (np && np.explosive && (nx!==x||ny!==y) && Math.random()<0.6 && this.has("explosion")) { this.set(nx,ny,"explosion"); this.produced("explosion"); }
-      if (np && np.flammable && this.has("fire")) { this.set(nx,ny,"fire"); this.produced("fire"); }
+    // Only detonate ONCE per explosion cell: mark it spent so the multi-frame
+    // lifespan doesn't re-run the full (expensive, ever-growing) blast.
+    const ci = this.idx(x, y);
+    if (this._blasted && this._blasted.has(ci)) {
+      // already blew: just live out the brief flash, then expire
+      this.life[ci] = Math.min(this.life[ci] || 3, 3);
+      return;
     }
-    this.life[this.idx(x,y)] = Math.min(this.life[this.idx(x,y)] || 6, 6);
+    if (!this._blasted) this._blasted = new Set();
+    this._blasted.add(ci);
+
+    // power -> radius. A bomb that detonated stashed its own power for this cell
+    // (explosion's base power is small). Otherwise use the element's authored power.
+    const stashed = this._blastPower && this._blastPower.get(ci);
+    if (this._blastPower) this._blastPower.delete(ci);
+    const power = stashed || (p && p.power) || 5;
+    const R = Math.max(2, Math.round(power));
+    const R2 = R * R;
+    const blastTemp = (p && p.temp) || 2600;
+
+    for (let dy = -R; dy <= R; dy++) {
+      for (let dx = -R; dx <= R; dx++) {
+        const dist2 = dx * dx + dy * dy;
+        if (dist2 > R2) continue;
+        const nx = x + dx, ny = y + dy;
+        if (!this.inBounds(nx, ny)) continue;
+        const j = this.idx(nx, ny);
+        const nid = this.grid[j];
+        const np = this.phys(nid);
+        // falloff: full force at the core, tapering to the rim
+        const t = dist2 / R2;              // 0 at centre .. 1 at rim
+        const force = 1 - t;               // 1 .. 0
+
+        // 1) dump heat everywhere in the radius (this is what melts/ignites)
+        this.temp[j] = Math.max(this.temp[j], blastTemp * (0.25 + 0.75 * force));
+
+        // 2) chain-detonate other explosives caught in the blast
+        if (np && np.explosive && (nx !== x || ny !== y) && this.has("explosion")) {
+          this.set(nx, ny, "explosion"); this.produced("explosion"); continue;
+        }
+
+        // 3) destroy / fling matter. Closer = more likely to be obliterated.
+        if (nid) {
+          const isWall = np && (np.indestructible || np.behavior === "wall");
+          if (!isWall) {
+            // core obliterates almost everything; rim merely scatters powders/liquids
+            const clearChance = np && np.state === "solid"
+              ? 0.85 * force                       // solids: carve a crater near the core
+              : 0.95 * force + 0.2;                // powder/liquid/gas: flung easily
+            if (Math.random() < clearChance) {
+              this.clearCell(nx, ny);
+              // leftover flammables that survive may ignite
+              if (np && np.flammable && Math.random() < 0.5 && this.has("fire")) {
+                this.set(nx, ny, "fire"); this.produced("fire");
+              }
+              continue;
+            }
+            // survived: flammable matter at the fringe catches fire
+            if (np && np.flammable && Math.random() < 0.4 * force && this.has("fire")) {
+              this.set(nx, ny, "fire"); this.produced("fire");
+            }
+          }
+        } else {
+          // 4) fill the void with fire/smoke so the blast reads as a fireball
+          if (Math.random() < (0.5 * force + 0.1)) {
+            if (force > 0.45 && this.has("fire")) { this.set(nx, ny, "fire"); this.produced("fire"); }
+            else if (this.has("smoke")) { this.set(nx, ny, "smoke"); this.produced("smoke"); }
+          }
+        }
+      }
+    }
+    this.life[ci] = Math.min(this.life[ci] || 4, 4);
     this.spawnExplosionFX(x, y, R);
+    this.logEvent("reaction", `${this.nameOf(id)} detonated (blast r=${R})`, "explode|" + id);
+  }
+
+  // Bombs/explosives detonate when they get hot enough OR touch fire/spark/
+  // explosion. Called from react(). Replaces the explosive cell with an
+  // explosion energy cell that does the actual blast next tick.
+  _maybeDetonate(x, y, id, p) {
+    if (!p || !p.explosive) return false;
+    if (!this.has("explosion")) return false;
+    const i = this.idx(x, y);
+    // ignition threshold: unstable liquids (nitro) go off at low temp
+    const trigger = (p.state === "liquid") ? 80 : 240;
+    let go = this.temp[i] >= trigger;
+    if (!go) {
+      // touching fire / spark / explosion / lava also detonates
+      const neigh = [[0,1],[0,-1],[1,0],[-1,0]];
+      for (const [dx, dy] of neigh) {
+        const nx = x + dx, ny = y + dy;
+        if (!this.inBounds(nx, ny)) continue;
+        const nb = this.phys(this.grid[this.idx(nx, ny)]);
+        if (nb && (nb.behavior === "fire" || nb.behavior === "spark" ||
+                   nb.behavior === "explosion" || nb.behavior === "lava")) { go = true; break; }
+      }
+    }
+    if (!go) return false;
+    // become an explosion that carries THIS bomb's power
+    this.set(x, y, "explosion");
+    this.temp[i] = Math.max(this.temp[i], (p.temp) || 2600);
+    // stash the bomb's power on the new explosion cell via a side map so explode()
+    // uses the right radius (explosion element's base power is small)
+    if (!this._blastPower) this._blastPower = new Map();
+    this._blastPower.set(i, (p.power) || 6);
+    this.produced("explosion");
+    return true;
   }
 
   // Spawn an elaborate, multi-layer burst of FX particles centred on grid cell
@@ -1188,6 +1290,9 @@ export class Sandbox {
     const i = this.idx(x, y);
     const t = this.temp[i];
 
+    // explosives detonate when hot enough or touching fire/spark/lava/explosion
+    if (p.explosive && this._maybeDetonate(x, y, id, p)) return true;
+
     // ---- phase changes by REAL temperature thresholds ----
     // Each element carries its own °C thresholds (water boilAt 100, iron meltAt
     // 1538, etc). Fall back to generic defaults when a value isn't authored.
@@ -1276,9 +1381,12 @@ export class Sandbox {
         this.logEvent("reaction", `${this.nameOf(id)} grew into Water`, "grow|"+id);
         this.set(nx, ny, id); return false;
       }
-      // heat transfer for reactions: hot neighbor heats us
-      if (np.temp && np.temp > this.temp[i]) {
-        this.temp[i] += (np.temp - this.temp[i]) * 0.15;
+      // heat transfer for reactions: a hotter neighbour heats us. Use the LIVE
+      // grid temperature (this.temp[j]) so dynamically-heated cells conduct too,
+      // and fall back to the neighbour's authored temp for fresh hot sources.
+      const nLiveT = Math.max(this.temp[j], np.temp || -Infinity);
+      if (nLiveT > this.temp[i]) {
+        this.temp[i] += (nLiveT - this.temp[i]) * 0.2;
       }
       // ignite if flammable & hot neighbor
       if (p.flammable && np.behavior === "fire" && Math.random() < 0.3 && this.has("fire")) {
@@ -1290,23 +1398,81 @@ export class Sandbox {
   }
 
   diffuseHeat() {
-    // Ambient relaxation toward the regulated environment temperature. With the
-    // regulator off (enviroForce 0, ambient 20) this is the original light-touch
-    // settle toward room temperature. With it on, the whole grid is actively
-    // pushed toward `this.ambient` — empty cells (open air) track it fastest,
-    // filled materials warm/cool more slowly, hot self-heating sources (fire,
-    // lava) resist via their own temp logic.
-    if ((this.frame & 3) !== 0) return; // every 4 frames
+    // Two passes, every frame:
+    //   1) CONDUCTION — heat flows from hot cells into their 4 neighbours, so a
+    //      fire / lava / molten cell actually warms everything around it (this is
+    //      what makes fire melt nearby chocolate, ignite wood, boil water, …).
+    //   2) AMBIENT relaxation — every cell drifts toward the regulated room
+    //      temperature. Self-heating sources (fire/lava/plasma/sun) re-assert
+    //      their authored temperature each frame so they stay a constant furnace
+    //      instead of cooling down to ambient.
+    const W = this.W, H = this.H, temp = this.temp, grid = this.grid;
     const amb = this.ambient;
     const ef = this.enviroForce;
-    // base settle rates (regulator off) + extra pull from the environment
-    const emptyRate = 0.05 + ef * 4;   // air equalizes quickly
-    const solidRate = 0.01 + ef;       // materials lag behind
-    for (let i = 0; i < this.temp.length; i++) {
-      if (this.grid[i] === 0) {
-        this.temp[i] += (amb - this.temp[i]) * Math.min(0.6, emptyRate);
-      } else {
-        this.temp[i] += (amb - this.temp[i]) * Math.min(0.4, solidRate);
+
+    // --- 0) hot sources keep emitting (re-assert their authored temp) ---
+    // Anything whose element carries a `temp` ≥ 200 °C is treated as an active
+    // heat source (fire, lava, wildfire, plasma, sun, molten metals, …) and
+    // floors its own cell temperature so ambient relaxation can't snuff it out.
+    // We ALSO directly blast heat into its 4 neighbours the same frame, so even a
+    // lava drop that only touches a material for a frame or two still scorches
+    // it. Passive averaging (pass 1) alone is too slow for fast-moving sources.
+    for (let i = 0; i < grid.length; i++) {
+      const id = grid[i];
+      if (!id) continue;
+      const p = this.phys(id);
+      if (!p || p.temp == null || p.temp < 200) continue;
+      const srcT = p.temp;
+      if (temp[i] < srcT) {
+        // ease up to the source temp quickly (not instant, so it still glows-in)
+        temp[i] += (srcT - temp[i]) * 0.6;
+      }
+      // direct emission into the 4-neighbourhood — drive each cooler neighbour a
+      // big fraction of the way toward the source temperature this very frame.
+      const x = i % W, y = (i / W) | 0;
+      const EMIT = 0.45; // strong, so contact heating is immediate & obvious
+      if (x > 0     && temp[i - 1] < srcT) temp[i - 1] += (srcT - temp[i - 1]) * EMIT;
+      if (x < W - 1 && temp[i + 1] < srcT) temp[i + 1] += (srcT - temp[i + 1]) * EMIT;
+      if (y > 0     && temp[i - W] < srcT) temp[i - W] += (srcT - temp[i - W]) * EMIT;
+      if (y < H - 1 && temp[i + W] < srcT) temp[i + W] += (srcT - temp[i + W]) * EMIT;
+    }
+
+    // --- 1) neighbour conduction (explicit, mass-conserving averaging) ---
+    // Snapshot temps so the pass is order-independent. Empty (air) cells conduct
+    // too but lightly; solids/liquids conduct more (metals are configured hotter
+    // via their authored temp, this is bulk thermal mixing). The conduction rate
+    // is intentionally generous so heat visibly radiates a few cells out.
+    const src = this._tempScratch && this._tempScratch.length === temp.length
+      ? this._tempScratch : (this._tempScratch = new Float32Array(temp.length));
+    src.set(temp);
+    const KSOLID = 0.16;  // conduction coefficient through materials
+    const KAIR = 0.10;    // conduction through empty air (radiative-ish)
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const i = y * W + x;
+        const here = src[i];
+        let flux = 0, n = 0;
+        // 4-neighbourhood
+        if (x > 0)     { flux += src[i - 1] - here; n++; }
+        if (x < W - 1) { flux += src[i + 1] - here; n++; }
+        if (y > 0)     { flux += src[i - W] - here; n++; }
+        if (y < H - 1) { flux += src[i + W] - here; n++; }
+        if (!n) continue;
+        const k = grid[i] === 0 ? KAIR : KSOLID;
+        temp[i] = here + (flux / n) * k;
+      }
+    }
+
+    // --- 2) ambient relaxation toward the regulated environment temperature ---
+    if ((this.frame & 1) === 0) {
+      const emptyRate = 0.05 + ef * 4;   // air equalizes quickly
+      const solidRate = 0.01 + ef;       // materials lag behind
+      for (let i = 0; i < temp.length; i++) {
+        if (grid[i] === 0) {
+          temp[i] += (amb - temp[i]) * Math.min(0.6, emptyRate);
+        } else {
+          temp[i] += (amb - temp[i]) * Math.min(0.4, solidRate);
+        }
       }
     }
   }
