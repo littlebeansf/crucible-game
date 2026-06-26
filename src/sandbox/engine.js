@@ -136,6 +136,25 @@ export class Sandbox {
     const p = this.physById.get(id);
     return p ? p.state : "solid"; // elements w/o phys are inert solids when placed
   }
+  // How resistant a liquid is to flowing (0 = water-thin, 1 = barely moves).
+  // Uses an authored `viscosity` when present; otherwise derives a believable
+  // value from behavior + density so thick fluids (lava, honey, blood, oil)
+  // ooze while thin ones (water, acid, alcohol) spread fast.
+  viscosity(id) {
+    const p = this.physById.get(id);
+    if (!p) return 0.2;
+    if (p.viscosity != null) return Math.max(0, Math.min(1, p.viscosity));
+    if (p.behavior === "lava") return 0.9;
+    if (p.behavior === "acid") return 0.1;
+    const d = p.density ?? 1;
+    // denser liquids (honey 1.42, blood 1.06, mercury 13.5) read as thicker;
+    // very light fuels (oil/gasoline/alcohol) still ooze a touch.
+    if (d >= 5) return 0.35;          // liquid metals: dense but mobile
+    if (d >= 1.3) return 0.6;         // honey-like syrups
+    if (d >= 1.02) return 0.3;        // blood/milk/brine
+    if (d < 0.9) return 0.45;         // oils & fuels: a bit gloopy
+    return 0.05;                       // water-thin default
+  }
 
   set(x, y, id, opts = {}) {
     if (!this.inBounds(x, y)) return;
@@ -323,27 +342,68 @@ export class Sandbox {
 
   has(id) { return this.physById.has(id) || (this.elements && this.elements[id]); }
 
-  // generic powder: down, then down-diagonal
+  // Can matter of density `d` occupy/displace the cell at (tx,ty)? (empty, or a
+  // lighter liquid/gas it can sink through). Used to gate diagonal moves so
+  // powders/liquids can't squeeze through a diagonal seam where a wall meets a
+  // floor — a diagonal slide is only legal if an ORTHOGONALLY adjacent cell on
+  // the way is also open. Fixes liquids/powders leaking out of sealed containers.
+  _passable(tx, ty, d) {
+    if (!this.inBounds(tx, ty)) return false;
+    const tid = this.grid[this.idx(tx, ty)];
+    if (tid === 0) return true;
+    const ts = this.state(tid);
+    return (ts === "liquid" || ts === "gas") && this.density(tid) < d;
+  }
+  // Try a diagonal down move into (x+dir, y+1), but only when the seam is open:
+  // the cell directly below OR the cell directly beside must be passable. This
+  // stops corner-tunnelling through solid walls.
+  _diagDown(x, y, dir, d) {
+    if (!this._passable(x, y + 1, d) && !this._passable(x + dir, y, d)) return false;
+    return this.tryMoveInto(x, y, x + dir, y + 1, d);
+  }
+
+  // generic powder: down, then down-diagonal (corner-tunnelling guarded)
   movePowder(x, y, id) {
     const d = this.density(id);
     if (this.tryMoveInto(x, y, x, y + 1, d)) return;
     const dir = Math.random() < 0.5 ? -1 : 1;
-    if (this.tryMoveInto(x, y, x + dir, y + 1, d)) return;
-    if (this.tryMoveInto(x, y, x - dir, y + 1, d)) return;
+    if (this._diagDown(x, y, dir, d)) return;
+    if (this._diagDown(x, y, -dir, d)) return;
   }
 
-  // liquid: down, down-diag, then sideways spread
+  // liquid: down, down-diag, then sideways spread.
+  // Viscosity governs HOW the fluid moves: thick fluids (lava/honey) sometimes
+  // refuse to flow this tick and barely spread sideways, so they pile into
+  // gloopy mounds; thin fluids (water/acid) flow every tick and level out fast.
+  // Density governs stratification: a heavier liquid actively sinks through a
+  // lighter one directly below it (oil floats on water, mercury sinks).
   moveLiquid(x, y, id, beh) {
     const d = this.density(id);
+    const visc = this.viscosity(id);
+    // sink straight down into empty / lighter fluid (gravity always wins)
     if (this.tryMoveInto(x, y, x, y + 1, d)) return;
+    // active restratification: if the cell directly below is a DIFFERENT, lighter
+    // liquid, trade places so heavier liquid ends up underneath (layering).
+    const below = this.grid[this.idx(x, y + 1 < this.H ? y + 1 : y)];
+    if (y + 1 < this.H && below && below !== id && this.state(below) === "liquid"
+        && this.density(below) < d && Math.random() < 0.5) {
+      this.swap(x, y, x, y + 1); return;
+    }
     const dir = Math.random() < 0.5 ? -1 : 1;
-    if (this.tryMoveInto(x, y, x + dir, y + 1, d)) return;
-    if (this.tryMoveInto(x, y, x - dir, y + 1, d)) return;
-    // spread horizontally up to a few cells
-    const reach = beh === "lava" ? 1 : 3;
-    for (let s = 1; s <= reach; s++) {
-      if (this.tryMoveInto(x, y, x + dir * s, y, d)) return;
-      if (this.tryMoveInto(x, y, x - dir * s, y, d)) return;
+    if (this._diagDown(x, y, dir, d)) return;
+    if (this._diagDown(x, y, -dir, d)) return;
+    // viscous fluids sometimes just don't flow sideways this tick (sticky)
+    if (Math.random() < visc) return;
+    // sideways spread reach shrinks with viscosity: water reaches far, lava ~1.
+    // Walk outward one cell at a time and STOP at the first wall so a liquid can
+    // never teleport across a solid barrier (no jumping through container walls).
+    const reach = Math.max(1, Math.round(4 * (1 - visc)));
+    for (const sdir of (Math.random() < 0.5 ? [dir, -dir] : [-dir, dir])) {
+      for (let s = 1; s <= reach; s++) {
+        const tx = x + sdir * s;
+        if (!this._passable(tx, y, d)) break;          // blocked: stop, don't skip past walls
+        if (this.tryMoveInto(x, y, tx, y, d)) return;
+      }
     }
   }
 

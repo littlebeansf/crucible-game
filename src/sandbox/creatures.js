@@ -123,6 +123,12 @@ export class CreatureSystem {
       facing: Math.random() < 0.5 ? -1 : 1,
       phase: Math.random() * Math.PI * 2, // for flutter/bob
       restCD: 0,
+      // directional persistence: commit to a heading for a stretch of frames so
+      // walkers stroll in straight lines and flyers cruise instead of jittering.
+      heading: Math.random() < 0.5 ? -1 : 1,
+      headingCD: 40 + Math.floor(Math.random() * 80),
+      // flyers seek a preferred cruising altitude (set on first fly tick)
+      cruiseY: 0,
     };
     this.list.push(cr);
     this._notify();
@@ -148,9 +154,31 @@ export class CreatureSystem {
     return p ? p.behavior : null;
   }
   isWater(px, py) { return this.behaviorAt(px, py) === "water"; }
+  // Solid OR powder cell -> a creature cannot pass through it (it's a wall/floor).
+  isSolid(px, py) {
+    const st = this.stateAt(px, py);
+    return st === "solid" || st === "powder";
+  }
+  // A cell that injures life. Fire, lava, explosion and acid are lethal to the
+  // touch; live electricity/lightning (spark) electrocutes; molten-hot cells
+  // burn even without an explicit hazard behavior.
   isDanger(px, py) {
     const b = this.behaviorAt(px, py);
-    return b === "fire" || b === "lava" || b === "explosion" || b === "acid";
+    if (b === "fire" || b === "lava" || b === "explosion" || b === "acid" || b === "spark") return true;
+    // anything scorchingly hot (molten metal, plasma) also counts as danger
+    if (this.tempAt(px, py) >= 200) return true;
+    return false;
+  }
+  // How badly a danger cell hurts (per frame). Lets bombs/fire kill, acid sting.
+  dangerSeverity(px, py) {
+    const b = this.behaviorAt(px, py);
+    if (b === "explosion") return 60;   // a blast is near-instantly fatal
+    if (b === "lava") return 28;
+    if (b === "fire") return 22;
+    if (b === "spark") return 26;       // electrocution
+    if (b === "acid") return 14;
+    if (this.tempAt(px, py) >= 200) return 16; // burned by molten/plasma heat
+    return 8;
   }
   // is there solid ground just below this point? (for walkers)
   groundBelow(px, py) {
@@ -251,9 +279,24 @@ export class CreatureSystem {
     const inWater = this.isWater(cr.x, cr.y);
     const t = this.tempAt(cr.x, cr.y);
 
+    // HAZARDS ARE LETHAL. Fire, lava, a bomb blast, live lightning or acid do
+    // real, severe damage that CAN kill a creature outright — even in persistent
+    // mode (an explosion should not leave survivors). We track this with
+    // cr.fatalHit so the persistent-mode health floor below is bypassed.
+    cr.fatalHit = false;
     if (danger) {
-      cr.health -= 6; cr.state = "Fleeing danger!";
+      const dmg = this.dangerSeverity(cr.x, cr.y);
+      cr.health -= dmg;
+      cr.state = "Fleeing danger!";
+      if (dmg >= 16) cr.fatalHit = true; // serious burns/blasts can be fatal
     }
+    // also catch a blast shockwave / fire raging in the immediate vicinity even
+    // if the exact centre cell isn't a hazard this frame (sparse hazard cells).
+    if (!danger && this._dangerNear(cr, 1)) {
+      cr.health -= 10; cr.state = "Fleeing danger!"; cr.fatalHit = true;
+    }
+    // a live explosion FX flash right on top of a creature incinerates it
+    if (this._inExplosionFX(cr)) { cr.health -= 70; cr.state = "Caught in blast!"; cr.fatalHit = true; }
     // extreme temperature hurts everyone a little
     if (t > 80) cr.health -= Math.min(3, (t - 80) / 60);
     if (t < -5) cr.health -= Math.min(2, (-t) / 30);
@@ -282,9 +325,24 @@ export class CreatureSystem {
       if (!this.persistent) cr.health -= 1.2;
       if (!danger && !/!$/.test(cr.state)) cr.state = this.persistent ? "Hungry" : "Starving";
     }
+    // Death from a HAZARD always applies, even in persistent mode — a bomb,
+    // fire or lightning strike is a real, expected death (the whole point of
+    // the user's request). Natural starvation/old-age stays disabled in
+    // persistent mode via the health floor below.
+    if (cr.fatalHit && cr.health <= 0) {
+      const b = this.behaviorAt(cr.x, cr.y);
+      const cause = b === "explosion" || cr.state === "Caught in blast!" ? "Killed in blast"
+        : b === "lava" ? "Incinerated in lava"
+        : b === "spark" ? "Electrocuted"
+        : b === "acid" ? "Dissolved in acid"
+        : "Burned to death";
+      this._kill(cr, cause);
+      return;
+    }
     if (this.persistent) {
-      // Floor health just above zero so creatures cling to life and recover.
-      if (cr.health < 6) cr.health = 6;
+      // Floor health just above zero so creatures cling to life and recover —
+      // but NOT while taking a fatal hazard hit (handled just above).
+      if (cr.health < 6 && !cr.fatalHit) cr.health = 6;
       // Recover when safe & in the right element, and slowly refill energy so
       // creatures don't sit pinned at "Hungry" forever.
       const safeHere = !danger && t <= 80 && t >= -5;
@@ -315,6 +373,36 @@ export class CreatureSystem {
     if (cr.y < 4) { cr.y = 4; cr.vy = Math.abs(cr.vy) * 0.3; }
     if (cr.y > H - 4) { cr.y = H - 4; cr.vy = Math.min(0, cr.vy); }
     if (cr.vx !== 0) cr.facing = cr.vx < 0 ? -1 : 1;
+  }
+
+  // is a hazard cell within `cells` of the creature centre (8-neighbourhood)?
+  _dangerNear(cr, cells) {
+    const step = this.sb.cell;
+    for (let dy = -cells; dy <= cells; dy++) {
+      for (let dx = -cells; dx <= cells; dx++) {
+        if (dx === 0 && dy === 0) continue;
+        if (this.isDanger(cr.x + dx * step, cr.y + dy * step)) return true;
+      }
+    }
+    return false;
+  }
+  // is a live explosion FX flash/fireball overlapping the creature right now?
+  // The engine stores FX particles in CELL units on sb.fx; flash & fireball are
+  // the hot, damaging cores.
+  _inExplosionFX(cr) {
+    const fx = this.sb.fx;
+    if (!fx || !fx.length) return false;
+    const cell = this.sb.cell;
+    const cx = cr.x / cell, cy = cr.y / cell; // creature centre in cell units
+    for (let i = 0; i < fx.length; i++) {
+      const p = fx[i];
+      if (p.kind !== "flash" && p.kind !== "fireball") continue;
+      const rCells = (p.r / cell) || 0;
+      if (rCells <= 0) continue;
+      const dx = p.x - cx, dy = p.y - cy;
+      if (dx * dx + dy * dy <= rCells * rCells) return true;
+    }
+    return false;
   }
 
   // flee vector away from nearest danger cell within a small radius
@@ -364,7 +452,7 @@ export class CreatureSystem {
         }
       }
     }
-    // buoyancy: if not in water, sink (gravity) trying to fall back into a pool
+    // buoyancy: if not in water, sink (gravity) trying to flop back into a pool
     if (!this.isWater(cr.x, cr.y)) { cr.vy += 0.25; cr.vx *= 0.96; }
     else {
       // stay submerged: avoid the surface (rise a bit if water below, sink if air below)
@@ -375,30 +463,79 @@ export class CreatureSystem {
       cr.vx *= 0.92; cr.vy *= 0.9;
     }
     this._limit(cr, 1.7);
-    cr.x += cr.vx; cr.y += cr.vy;
+    // move with SOLID collision: a fish must not pass through objects — it can
+    // only swim through water (or fall through air). Resolve X and Y separately
+    // so it slides along walls/floors instead of tunnelling into them.
+    this._moveCollideSolid(cr);
+  }
+
+  // Integrate cr.vx/cr.vy but stop at solid/powder cells (walls, floors, rocks).
+  // Water and empty air are passable. Used by swimmers so a beached/flopping
+  // fish rests on top of sand instead of sinking through the world.
+  _moveCollideSolid(cr) {
+    const step = this.sb.cell;
+    const half = (cr.spec.size || 16) * 0.4; // body half-extent toward leading edge
+    // X axis
+    if (cr.vx !== 0) {
+      const edge = cr.x + Math.sign(cr.vx) * half;
+      if (this.isSolid(edge + cr.vx, cr.y)) { cr.vx = 0; }
+      else cr.x += cr.vx;
+    }
+    // Y axis
+    if (cr.vy !== 0) {
+      const edge = cr.y + Math.sign(cr.vy) * half;
+      if (this.isSolid(cr.x, edge + cr.vy)) {
+        // landed on / hit a solid surface: snap feet to its top edge when falling
+        if (cr.vy > 0) {
+          const surf = this.surfaceY(cr.x, cr.y - half);
+          if (surf != null) cr.y = surf - half;
+        }
+        cr.vy = 0;
+      } else cr.y += cr.vy;
+    }
   }
 
   _fly(cr, W, H) {
+    // Establish a personal cruising altitude inside an upper-middle flight band
+    // the first time this creature flies (and re-roll it occasionally). The band
+    // sits between ~18% and ~55% of the room height: high enough to look like
+    // flight, but the creature is gently pulled BACK toward it instead of being
+    // pushed ever-upward, so bees/birds no longer escape and pin to the ceiling.
+    const bandTop = H * 0.18, bandBot = H * 0.55;
+    if (!cr.cruiseY || cr.cruiseY < bandTop || cr.cruiseY > bandBot) {
+      cr.cruiseY = bandTop + Math.random() * (bandBot - bandTop);
+    }
     const flee = this._fleeVector(cr, 4);
     if (flee) { cr.vx += flee.fx * 0.6; cr.vy += flee.fy * 0.6; cr.state = "Fleeing danger!"; }
     else {
-      // tire over time -> must land and rest
+      // tire over time -> must land and rest on the ground
       if (cr.restCD > 0) {
         cr.restCD--; cr.state = "Resting";
         cr.vx *= 0.8; cr.vy += 0.2; // settle down
       } else {
         if (cr.energy < 25 && this.groundBelow(cr.x, cr.y)) { cr.restCD = 120; cr.energy += 18; }
-        // wander the sky with flutter
+        // occasionally pick a new cruising altitude so flight looks lively
+        if (Math.random() < 0.01) cr.cruiseY = bandTop + Math.random() * (bandBot - bandTop);
         const flutter = cr.spec.flutter || 0.6;
-        cr.vx += (Math.random() * 2 - 1) * 0.25 * flutter;
-        cr.vy += (Math.random() * 2 - 1) * 0.22 * flutter + Math.sin(cr.phase) * 0.05;
-        // bees seek plants/flowers; gentle lift to stay airborne
-        cr.vy -= 0.14; // counter gravity -> hovers
+        // --- horizontal: persistent heading (commit to a direction for a while)
+        if (--cr.headingCD <= 0) {
+          cr.heading = Math.random() < 0.5 ? -cr.heading : cr.heading;
+          if (Math.random() < 0.25) cr.heading = Math.random() < 0.5 ? -1 : 1;
+          cr.headingCD = 50 + Math.floor(Math.random() * 90);
+        }
+        cr.vx += cr.heading * 0.06 + (Math.random() * 2 - 1) * 0.06 * flutter;
+        // --- vertical: spring back toward the cruise altitude (band-seeking)
+        const dy = cr.cruiseY - cr.y;
+        cr.vy += dy * 0.012;            // restoring pull toward the band
+        cr.vy += Math.sin(cr.phase) * 0.05 * flutter; // gentle bob/flutter
+        cr.vy *= 0.9;                   // damp vertical so it settles in-band
         if (cr.state !== "Fleeing danger!") cr.state = cr.kind === "bee" ? "Buzzing" : "Flying";
       }
     }
     // if it sinks into water, struggle upward
     if (this.isWater(cr.x, cr.y)) cr.vy -= 0.5;
+    // never let a flyer cross the very top edge of the room
+    if (cr.y < bandTop * 0.6 && cr.vy < 0) cr.vy = 0;
     this._limit(cr, cr.spec.flutter ? 1.5 : 1.9);
     cr.x += cr.vx; cr.y += cr.vy;
   }
@@ -414,10 +551,22 @@ export class CreatureSystem {
         if (tgt && Math.abs(tgt.x - cr.x) > 18) { cr.vx += Math.sign(tgt.x - cr.x) * 0.14; cr.state = "Following"; }
         else { cr.vx += (Math.random() * 2 - 1) * 0.1; if (cr.state === "Idle" || cr.state === "Following") cr.state = "Wandering"; }
       } else {
-        // wander; occasionally pause
-        if (Math.random() < 0.02) cr.vx = 0;
-        else cr.vx += (Math.random() * 2 - 1) * 0.12;
-        if (!/!$/.test(cr.state)) cr.state = Math.abs(cr.vx) < 0.1 ? "Standing" : "Walking";
+        // Directional persistence: commit to one heading for a stretch of frames
+        // and stroll in a STRAIGHT line, rather than re-rolling vx every tick
+        // (which produced the old jittery, twitchy wander). Occasionally pause to
+        // stand still, then resume — sometimes reversing direction.
+        if (--cr.headingCD <= 0) {
+          const r = Math.random();
+          if (r < 0.30) { cr.heading = 0; cr.headingCD = 30 + Math.floor(Math.random() * 50); }      // pause/stand
+          else if (r < 0.50) { cr.heading = -cr.heading || (Math.random() < 0.5 ? -1 : 1); cr.headingCD = 70 + Math.floor(Math.random() * 110); } // reverse
+          else { cr.heading = Math.random() < 0.5 ? -1 : 1; cr.headingCD = 70 + Math.floor(Math.random() * 130); }   // new direction
+        }
+        if (cr.heading === 0) {
+          cr.state = !/!$/.test(cr.state) ? "Standing" : cr.state; // settle to a stop
+        } else {
+          cr.vx += cr.heading * 0.10; // steady push in the committed direction
+          if (!/!$/.test(cr.state)) cr.state = "Walking";
+        }
       }
     }
     cr.vx *= 0.85;
