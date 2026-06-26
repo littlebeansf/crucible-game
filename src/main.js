@@ -15,7 +15,7 @@ import { Achievements, TIER_LABEL } from "./achievements.js";
 import { setupSettings, hintsEnabled, adminEnabled } from "./settings.js";
 import { AudioEngine } from "./audio.js";
 import { SCENES, sceneUnlocked, missingFor } from "./scenes.js";
-import { CreatureSystem, SPECIES, PLACEABLE, habitatOf } from "./sandbox/creatures.js";
+import { CreatureSystem, SPECIES, PLACEABLE, habitatOf, isPlaceableUnlocked } from "./sandbox/creatures.js";
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -177,7 +177,15 @@ function renderDrawer() {
   let list = state.discoveredList({ query: drawerQuery, sort: drawerSort, physOnly: drawerPhysOnly });
   // A category filter (driven by the Sandbox bottom bar on desktop) narrows the
   // drawer to a single category and forces the grouped layout so its header shows.
-  if (drawerCatFilter) list = list.filter(el => el.category === drawerCatFilter);
+  // The __liquid__/__gas__/__powder__ pseudo-filters narrow by physical STATE
+  // instead, so every fluid/gas/powder shows regardless of its catalog category.
+  const STATE_FILTERS = { __liquid__: "liquid", __gas__: "gas", __powder__: "powder" };
+  if (drawerCatFilter && STATE_FILTERS[drawerCatFilter]) {
+    const st = STATE_FILTERS[drawerCatFilter];
+    list = list.filter(el => el.phys && el.phys.state === st);
+  } else if (drawerCatFilter) {
+    list = list.filter(el => el.category === drawerCatFilter);
+  }
   const grouped = drawerSort === "category" || !!drawerCatFilter;
   const wrap = $("#drawer-items");
   wrap.innerHTML = "";
@@ -808,6 +816,19 @@ function importProgress(e) {
   reader.readAsText(file);
 }
 
+// Keep a board node fully inside the Forge board. `nx`/`ny` are the node's
+// top-left in board coordinates; node is 72px square. Returns clamped {x,y}.
+function clampToBoard(nx, ny) {
+  const r = board.getBoundingClientRect();
+  const SIZE = 72; // .bitem width/height
+  const maxX = Math.max(0, r.width - SIZE);
+  const maxY = Math.max(0, r.height - SIZE);
+  return {
+    x: Math.min(maxX, Math.max(0, nx)),
+    y: Math.min(maxY, Math.max(0, ny)),
+  };
+}
+
 function spawnOnBoard(id, x, y) {
   const el = state.el(id);
   if (!el) return;
@@ -817,6 +838,8 @@ function spawnOnBoard(id, x, y) {
   node.className = "bitem cat-" + el.category;
   node.dataset.id = id;
   node.dataset.uid = ++itemSeq;
+  const cl = clampToBoard(x - 36, y - 36);
+  x = cl.x + 36; y = cl.y + 36;
   node.style.left = (x - 36) + "px";
   node.style.top = (y - 36) + "px";
   node.innerHTML = `<div class="bitem-ic">${iconHTML(el, 52)}</div><div class="bitem-name">${el.name}</div>`;
@@ -864,9 +887,10 @@ function makeDraggable(rec) {
   });
   node.addEventListener("pointermove", e => {
     if (!dragging) return;
-    rec.x = ox + (e.clientX - startX);
-    rec.y = oy + (e.clientY - startY);
     if (Math.abs(e.clientX - startX) > 3 || Math.abs(e.clientY - startY) > 3) moved = true;
+    const cl = clampToBoard(ox + (e.clientX - startX), oy + (e.clientY - startY));
+    rec.x = cl.x;
+    rec.y = cl.y;
     node.style.left = rec.x + "px"; node.style.top = rec.y + "px";
     updateConnections(rec);
     // Combine-on-drag: as soon as the dragged item genuinely OVERLAPS a valid
@@ -1814,7 +1838,7 @@ function setupLife() {
 // True once the player has discovered at least one placeable creature, which
 // unlocks the Life feature (mirrors how scenarios unlock from discoveries).
 function anyLifeUnlocked() {
-  return PLACEABLE.some((kind) => state.isDiscovered(kind));
+  return PLACEABLE.some((kind) => isPlaceableUnlocked(kind, (id) => state.isDiscovered(id)));
 }
 
 // Refresh the locked/unlocked appearance of every Life palette tool and gate the
@@ -1826,7 +1850,7 @@ function refreshLifeLocks() {
     palette.querySelectorAll(".life-tool").forEach((b) => {
       const kind = b.dataset.kind;
       const spec = SPECIES[kind];
-      const have = state.isDiscovered(kind);
+      const have = isPlaceableUnlocked(kind, (id) => state.isDiscovered(id));
       b.classList.toggle("locked", !have);
       b.title = have
         ? `Place ${spec.name} (${habitatOf(kind)})`
@@ -1854,8 +1878,8 @@ function refreshLifeLocks() {
 // Select a Life placement tool. Sets a synthetic "creature:<kind>" tool so the
 // canvas paint handler spawns living creatures instead of cells.
 function selectLifeTool(kind) {
-  // locked species can't be placed until discovered in the Forge
-  if (!state.isDiscovered(kind)) {
+  // locked species can't be placed until a family member is discovered
+  if (!isPlaceableUnlocked(kind, (id) => state.isDiscovered(id))) {
     const spec = SPECIES[kind];
     toast(`Discover ${spec ? spec.name : kind} in the Forge first`, "🔒");
     audio.sfx("click");
@@ -2195,9 +2219,18 @@ function renderQuickBar() {
   }
   const orderedCats = [...groups.keys()].sort((a, b) => catMeta(a).order - catMeta(b).order);
 
-  // --- category filter tabs (All + each present category) ---
+  // STATE pseudo-groups: collect EVERY paintable liquid / gas regardless of its
+  // catalog category, so the player can quickly find all the fluids & gases to
+  // pour and react (they're otherwise scattered across Chemistry, Geology, …).
+  const byState = (st) => mats.filter(el => el.phys && el.phys.state === st);
+  const liquids = byState("liquid");
+  const gasesAll = byState("gas");
+  const powders = byState("powder");
+
+  // --- category filter tabs (All + State shortcuts + each present category) ---
   if (tabsRow) {
-    if (!groups.has(sbCatFilter) && sbCatFilter !== "all") sbCatFilter = "all";
+    const validKeys = new Set(["all", "__liquid__", "__gas__", "__powder__", ...orderedCats]);
+    if (!validKeys.has(sbCatFilter)) sbCatFilter = "all";
     const mkTab = (key, label) => {
       const t = document.createElement("button");
       t.className = "sb-cat-tab" + (sbCatFilter === key ? " active" : "");
@@ -2205,8 +2238,10 @@ function renderQuickBar() {
       t.textContent = label;
       t.addEventListener("click", () => {
         sbCatFilter = key;
-        // On desktop the bottom bar is just a filter for the SIDEBAR drawer
-        // (materials are added from there). On mobile it drives the bottom tiles.
+        // On desktop the bottom bar filters the SIDEBAR drawer (materials are
+        // added from there). On mobile it drives the bottom tiles. State
+        // pseudo-filters (__liquid__/__gas__/__powder__) narrow the drawer by
+        // physical state; renderDrawer() understands those keys directly.
         if (isDesktop()) {
           drawerCatFilter = key === "all" ? null : key;
           renderDrawer();
@@ -2216,7 +2251,15 @@ function renderQuickBar() {
       return t;
     };
     tabsRow.appendChild(mkTab("all", `All · ${mats.length}`));
+    if (liquids.length) tabsRow.appendChild(mkTab("__liquid__", `💧 Liquids ${liquids.length}`));
+    if (gasesAll.length) tabsRow.appendChild(mkTab("__gas__", `💨 Gases ${gasesAll.length}`));
+    if (powders.length) tabsRow.appendChild(mkTab("__powder__", `🧂 Powders ${powders.length}`));
     for (const cat of orderedCats) {
+      // The legacy "liquid"/"gas" CATEGORY tabs are now redundant with (and a
+      // strict subset of) the 💧/💨 STATE pseudo-tabs above, which gather every
+      // fluid/gas across all categories. Hide them to avoid two confusing
+      // "Liquids"/"Gases" tabs with different counts.
+      if (cat === "liquid" || cat === "gas") continue;
       const m = catMeta(cat);
       tabsRow.appendChild(mkTab(cat, `${m.emoji} ${m.label} ${groups.get(cat).length}`));
     }
@@ -2224,6 +2267,41 @@ function renderQuickBar() {
 
   // --- material sections ---
   const frag = document.createDocumentFragment();
+  // A STATE pseudo-filter renders one flat section of all matching fluids/gases.
+  const STATE_META = {
+    __liquid__: { emoji: "💧", label: "All Liquids", list: liquids, cat: "liquid" },
+    __gas__:    { emoji: "💨", label: "All Gases",   list: gasesAll, cat: "gas" },
+    __powder__: { emoji: "🧂", label: "All Powders", list: powders,  cat: "materials" },
+  };
+  if (STATE_META[sbCatFilter]) {
+    const sm = STATE_META[sbCatFilter];
+    const section = document.createElement("div");
+    section.className = "sb-cat-section";
+    const head = document.createElement("div");
+    head.className = "sb-cat-head";
+    head.innerHTML = `<span class="sb-cat-dot cat-${sm.cat}"></span>${sm.emoji} ${sm.label} <span class="sb-cat-n">${sm.list.length}</span>`;
+    section.appendChild(head);
+    const row = document.createElement("div");
+    row.className = "sb-cat-mats";
+    for (const el of sm.list) {
+      const b = document.createElement("button");
+      b.className = "qmat cat-" + el.category;
+      b.dataset.id = el.id;
+      b.title = el.name;
+      b.innerHTML = iconHTML(el, 26);
+      b.addEventListener("click", () => selectSandboxTool(el.id));
+      row.appendChild(b);
+    }
+    section.appendChild(row);
+    frag.appendChild(section);
+    qbar.appendChild(frag);
+    const valid0 = new Set(mats.map(m => m.id));
+    const isLifeTool0 = typeof sandbox.currentTool === "string" && sandbox.currentTool.startsWith("creature:");
+    if (sandbox.currentTool && sandbox.currentTool !== "eraser" && !isLifeTool0 && !valid0.has(sandbox.currentTool)) sandbox.currentTool = null;
+    if (!sandbox.currentTool && mats.length) selectSandboxTool(mats[0].id, true);
+    else if (!isLifeTool0) markActiveQuick(sandbox.currentTool);
+    return;
+  }
   const catsToShow = sbCatFilter === "all" ? orderedCats : [sbCatFilter];
   for (const cat of catsToShow) {
     const list = groups.get(cat) || [];

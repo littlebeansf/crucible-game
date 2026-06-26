@@ -114,7 +114,12 @@ export class Sandbox {
   setLibrary(elements) {
     this.elements = elements;
     for (const [id, el] of Object.entries(elements)) {
-      if (el.phys) this.physById.set(id, el.phys);
+      if (el.phys) {
+        // mirror the element's tags onto phys so reaction selectors ("tag:metal")
+        // can match neighbours from the resolved phys map.
+        if (el.tags && !el.phys.tags) el.phys.tags = el.tags;
+        this.physById.set(id, el.phys);
+      }
       this.colorById.set(id, pixelColor(el));
     }
   }
@@ -1126,6 +1131,57 @@ export class Sandbox {
     return false;
   }
 
+  // Does neighbour cell (nid/np) match a reaction selector like "water",
+  // "behavior:gas", or "tag:metal"? Exact-id is the common case.
+  _matchSel(sel, nid, np) {
+    if (!sel) return false;
+    if (sel === nid) return true;
+    if (sel.startsWith("behavior:")) return np && np.behavior === sel.slice(9);
+    if (sel.startsWith("state:")) return np && np.state === sel.slice(6);
+    if (sel.startsWith("tag:")) return np && np.tags && np.tags.indexOf(sel.slice(4)) >= 0;
+    return false;
+  }
+
+  // Run the element's declared phys.reactions against one neighbour. Returns
+  // true if a reaction fired and consumed this cell's turn.
+  _dataReact(x, y, i, id, p, nx, ny, j, nid, np) {
+    const rules = p.reactions;
+    if (!rules || !rules.length) return false;
+    for (const r of rules) {
+      if (!this._matchSel(r.with, nid, np)) continue;
+      if (r.needs && !this.has(r.needs)) continue;
+      if (r.needsNear && !this._neighborHas(x, y, r.needsNear) && !this._neighborHas(nx, ny, r.needsNear)) continue;
+      if (r.p != null && Math.random() >= r.p) continue;
+      // products must exist in the library (be discovered/known) to appear
+      if (r.to && !this.has(r.to)) continue;
+      if (r.n && !this.has(r.n)) continue;
+      if (r.heat) { this.temp[i] += r.heat; this.temp[j] += r.heat; }
+      let changed = false;
+      // replace neighbour
+      if (r.n) { this.set(nx, ny, r.n); this.produced(r.n); changed = true; }
+      else if (r.clearN) { this.clearCell(nx, ny); changed = true; }
+      // replace / clear THIS cell
+      if (r.to) { this.set(x, y, r.to); this.produced(r.to); changed = true; }
+      else if (r.consume) { this.clearCell(x, y); changed = true; }
+      if (r.event) this.logEvent("reaction", r.event, "dr|" + id + "|" + nid);
+      else if (changed) this.logEvent("reaction", `${this.nameOf(id)} reacted with ${this.nameOf(nid)}`, "dr|" + id + "|" + nid);
+      // a reaction that replaces THIS cell consumes the turn; a pure neighbour /
+      // catalytic effect lets normal movement continue.
+      if (r.to || r.consume) return true;
+    }
+    return false;
+  }
+
+  // True if any 4-neighbour of (x,y) holds element `wid`.
+  _neighborHas(x, y, wid) {
+    const d = [[0,1],[0,-1],[1,0],[-1,0]];
+    for (const [dx, dy] of d) {
+      const nx = x+dx, ny = y+dy;
+      if (this.inBounds(nx, ny) && this.grid[this.idx(nx, ny)] === wid) return true;
+    }
+    return false;
+  }
+
   // ---- reactions & phase changes ----
   react(x, y, id, p) {
     if (!p) return false;
@@ -1175,6 +1231,15 @@ export class Sandbox {
       if (!nid) continue;
       const np = this.phys(nid);
       if (!np) continue;
+
+      // ---- DATA-DRIVEN reactions (phys.reactions) ----
+      // Lets elements.json declare contact reactions without engine edits, so we
+      // can pile in lots of gas/liquid chemistry. Each rule: { with, to, n, p,
+      // needs, heat, event }. `with` matches the neighbour by exact id, or
+      // "behavior:water", or "tag:metal". `to` replaces THIS cell (null + no `n`
+      // clears it), `n` replaces the NEIGHBOUR cell. `needs` requires a 3rd id
+      // present somewhere (e.g. "fire"). `heat` adds °C to both cells.
+      if (this._dataReact(x, y, i, id, p, nx, ny, j, nid, np)) return true;
 
       // lava + water -> stone + steam
       if (p.behavior === "lava" && np.behavior === "water") {

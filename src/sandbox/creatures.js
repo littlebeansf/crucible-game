@@ -55,6 +55,30 @@ export const PLACEABLE = [
   "fish", "shark", "bird", "butterfly", "bee", "human", "dog", "duck", "frog",
 ];
 
+// A Life placeable archetype unlocks as soon as ANY creature in its family is
+// discovered in the Forge. The player rarely discovers the exact generic id
+// ("fish"); they usually discover a specific species (anglerfish, clownfish…).
+// Each list below is a roster of related element ids — discovering any one of
+// them unlocks that placeable so the Life palette feels responsive.
+export const PLACEABLE_UNLOCKERS = {
+  fish:      ["fish", "anglerfish", "clownfish", "swordfish", "jellyfish", "starfish", "kingfisher", "salmon", "tuna", "eel", "seahorse"],
+  shark:     ["shark", "whale", "dolphin", "orca", "octopus", "squid", "crab", "lobster"],
+  bird:      ["bird", "eagle", "owl", "parrot", "penguin", "duck", "chicken", "crow", "sparrow", "robin", "flamingo", "peacock", "hummingbird", "kingfisher"],
+  butterfly: ["butterfly", "moth", "caterpillar", "dragonfly"],
+  bee:       ["bee", "wasp", "ant", "mosquito", "beetle", "ladybug", "firefly", "termite", "cockroach"],
+  human:     ["human"],
+  dog:       ["dog", "cat", "wolf", "fox", "lion", "tiger", "bear", "cow", "horse", "sheep", "pig", "goat", "rabbit", "deer", "elephant", "monkey", "mouse", "rat", "hamster"],
+  duck:      ["duck", "goose", "swan", "pelican"],
+  frog:      ["frog", "toad", "salamander", "newt", "tadpole"],
+};
+
+// True if a placeable archetype should be unlocked given the discovery state.
+// `isDiscovered` is a predicate (id) => boolean (e.g. state.isDiscovered).
+export function isPlaceableUnlocked(kind, isDiscovered) {
+  const fam = PLACEABLE_UNLOCKERS[kind] || [kind];
+  return fam.some((id) => isDiscovered(id));
+}
+
 // habitat grouping for the population counter
 export function habitatOf(kind) {
   const s = SPECIES[kind];
@@ -365,25 +389,29 @@ export class CreatureSystem {
     // --- GAS SUFFOCATION: air-breathers choke in smoke / toxic / dense fumes ---
     // Swimmers (fish/shark) breathe water so smoke in air doesn't apply to them;
     // everyone else takes damage and is flagged distressed while engulfed.
+    // A breathing failure is a LETHAL condition: it bypasses the persistent
+    // health floor so the creature actually dies instead of clinging at 1 HP.
+    cr.lethal = false;
     if (spec.loco !== "swim" && this.isSuffocatingGas(cr.x, cr.y)) {
       cr.health -= 3.5;
       cr.state = "Suffocating!";
       cr.choking = true;
+      cr.lethal = true;
     } else {
       cr.choking = false;
     }
 
     if (spec.loco === "swim") {
-      // FISH/SHARK: need water. Out of water = suffocating.
-      if (!inWater) { cr.health -= 4; cr.state = "Suffocating!"; }
+      // FISH/SHARK: need water. Out of water = suffocating (LETHAL).
+      if (!inWater) { cr.health -= 4; cr.state = "Suffocating!"; cr.lethal = true; }
       else if (cr.state === "Suffocating!" || cr.state === "Idle") cr.state = "Swimming";
     } else if (spec.loco === "fly") {
-      // FLYERS: drown if submerged in water; otherwise fine in open air.
-      if (inWater) { cr.health -= 5; cr.state = "Drowning!"; }
+      // FLYERS: drown if submerged in water (LETHAL); otherwise fine in open air.
+      if (inWater) { cr.health -= 5; cr.state = "Drowning!"; cr.lethal = true; }
       else if (cr.state === "Drowning!") cr.state = "Idle"; // back in air -> recover
     } else if (spec.loco === "walk") {
-      // WALKERS (incl. humans): drown if head underwater.
-      if (inWater) { cr.health -= 4; cr.state = "Drowning!"; }
+      // WALKERS (incl. humans): drown if head underwater (LETHAL).
+      if (inWater) { cr.health -= 4; cr.state = "Drowning!"; cr.lethal = true; }
       else if (cr.state === "Drowning!") cr.state = "Idle"; // breathing air again -> recover
     } else if (spec.loco === "amph") {
       // AMPHIBIANS (frog/duck/penguin): happy in water OR on land.
@@ -411,10 +439,17 @@ export class CreatureSystem {
       this._kill(cr, cause);
       return;
     }
+    // A LETHAL breathing failure (suffocation / drowning) also kills outright,
+    // bypassing the persistent floor — animals must not live forever at 1 HP.
+    if (cr.lethal && cr.health <= 0) {
+      const cause = cr.state === "Drowning!" ? "Drowned" : "Suffocated";
+      this._kill(cr, cause);
+      return;
+    }
     if (this.persistent) {
       // Floor health just above zero so creatures cling to life and recover —
-      // but NOT while taking a fatal hazard hit (handled just above).
-      if (cr.health < 6 && !cr.fatalHit) cr.health = 6;
+      // but NOT while taking a fatal hazard hit or a lethal breathing failure.
+      if (cr.health < 6 && !cr.fatalHit && !cr.lethal) cr.health = 6;
       // Recover when safe & in the right element, and slowly refill energy so
       // creatures don't sit pinned at "Hungry" forever.
       const safeHere = !danger && t <= 80 && t >= -5;
@@ -426,7 +461,7 @@ export class CreatureSystem {
       if (safeHere && rightElement && cr.health < 100) cr.health = Math.min(100, cr.health + 1.5);
       if (cr.energy < 100) cr.energy = Math.min(100, cr.energy + 0.05);
     } else if (cr.health <= 0) {
-      this._kill(cr, danger ? "Burned up" : (here === "oob" ? "Lost" : "Perished"));
+      this._kill(cr, danger ? "Burned up" : (cr.lethal ? (cr.state === "Drowning!" ? "Drowned" : "Suffocated") : (here === "oob" ? "Lost" : "Perished")));
       return;
     }
 

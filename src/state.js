@@ -245,7 +245,13 @@ export class GameState {
   // list of discovered elements, optionally filtered/sorted
   discoveredList({ query = "", sort = "recent", physOnly = false } = {}) {
     let ids = [...this.discovered];
-    if (physOnly) ids = ids.filter(id => this.elements[id]?.phys);
+    // physOnly = the Sandbox drawer: only paintable materials. Elements flagged
+    // phys.ambient (Air) behave like the empty-cell background — you don't paint
+    // them as discrete cells — so they're excluded from the paintable drawer.
+    if (physOnly) ids = ids.filter(id => {
+      const p = this.elements[id]?.phys;
+      return p && !p.ambient;
+    });
     if (query) {
       const q = query.toLowerCase();
       ids = ids.filter(id => this.elements[id]?.name.toLowerCase().includes(q));
