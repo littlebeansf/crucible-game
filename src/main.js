@@ -1365,6 +1365,17 @@ function setupSandbox() {
     fillBtn.textContent = shapeFill ? "Fill" : "Line";
     audio.sfx("click");
   });
+  // ---- view mode: Normal / Temperature field / Pressure field ----
+  // Switches how the whole sandbox is drawn. Temperature & Pressure paint every
+  // cell (including the open air — there is no vacuum) as a heatmap so you can
+  // read the thermal / pressure field at a glance, with a legend bottom-left.
+  const viewBtns = $$("#sb-view-tools .view-btn[data-view]");
+  const setViewMode = (m) => {
+    sandbox.setViewMode(m);
+    viewBtns.forEach(b => b.classList.toggle("is-active", b.dataset.view === sandbox.viewMode));
+  };
+  viewBtns.forEach(b => b.addEventListener("click", () => { setViewMode(b.dataset.view); audio.sfx("click"); }));
+
   // suppress the browser context menu so right-click can remove creatures
   canvas.addEventListener("contextmenu", e => e.preventDefault());
 

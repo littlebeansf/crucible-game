@@ -68,6 +68,12 @@
             <button id="sb-shape-circle" class="shape-btn" data-shape="circle" title="Circle">⚪</button>
             <button id="sb-shape-fill" class="shape-btn fill-btn is-active" data-fill="toggle" title="Filled vs outline">Fill</button>
           </div>
+          <!-- view mode: normal / temperature field / pressure field -->
+          <div id="sb-view-tools" class="sb-view-tools" role="group" aria-label="View mode">
+            <button class="view-btn is-active" data-view="normal" title="Normal material view">🎨 View</button>
+            <button class="view-btn" data-view="temperature" title="Temperature heatmap of the whole sandbox">🌡 Temp</button>
+            <button class="view-btn" data-view="pressure" title="Pressure heatmap of the whole sandbox">⏲ Pressure</button>
+          </div>
           <button id="sb-climate-toggle" class="tool-btn" title="Temperature regulator — heat or cool the whole sandbox">🌡️ Climate</button>
           <button id="sb-sim-toggle" class="tool-btn" title="Simulation settings — speed, air temp, gravity, limits, canvas">⚙️ Sim</button>
           <button id="sb-weather-toggle" class="tool-btn" title="Trigger animated weather events">🌦️ Weather</button>

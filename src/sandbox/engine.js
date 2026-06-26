@@ -70,7 +70,24 @@ export class Sandbox {
     // life, max, kind}. Kinds: flash, fireball, shock, ember, smoke, spark.
     this.fx = [];
     this.maxFx = 900;
+    // --- visualisation mode ---
+    // "normal"      : material colours (default)
+    // "temperature" : every cell tinted by its temperature (blue→red heatmap)
+    // "pressure"    : every cell tinted by its pressure (calm→red heatmap)
+    // In temp/pressure modes EVERY cell is coloured, including the open air, so
+    // the room reads as a continuous field rather than scattered particles.
+    this.viewMode = "normal";
+    // No-vacuum model: the sandbox is a room full of air, never empty space. The
+    // background paints a faint air wash and empty cells get a subtle moving
+    // air tint so "Nothing" never looks like a black void.
+    this.airBaseDark = "#0c1118";   // air wash behind everything (dark theme)
     this.resize();
+  }
+
+  // Switch the canvas visualisation. mode ∈ {"normal","temperature","pressure"}.
+  setViewMode(mode) {
+    if (mode === "temperature" || mode === "pressure") this.viewMode = mode;
+    else this.viewMode = "normal";
   }
 
   // Set the global ambient/environment temperature (°C). Passing a value other
@@ -610,6 +627,15 @@ export class Sandbox {
       case "fire": this.moveFire(x, y, id, p); break;
       case "spark": this.moveSpark(x, y, id, p); break;
       case "explosion": this.explode(x, y, id, p); break;
+      // Celestial bodies (sun / moon / star): fixed in place. They never fall,
+      // spread, burn neighbours, or expire. Sun/star still emit heat purely via
+      // the diffuseHeat source loop (their authored temp ≥ 200). The moon is an
+      // inert cool body. They are drawn as smooth glowing discs in render().
+      case "celestial":
+        if (p && p.temp != null && p.temp >= 200) {
+          this.temp[i] = Math.max(this.temp[i], p.temp);
+        }
+        break;
       case "plant": /* mostly static; growth handled in react */ break;
       case "static": default: this.maybeFall(x, y, id, p); break;
     }
@@ -1478,15 +1504,180 @@ export class Sandbox {
   }
 
   // ---- rendering ----
+  // True when an element id is a celestial body (sun/moon/star). These are NOT
+  // drawn as individual grid cells — they are collected into bodies and drawn as
+  // smooth glowing discs so they read as actual celestial objects, not powder.
+  _isCelestial(id) {
+    if (!id) return false;
+    const p = this.phys(id);
+    return !!(p && p.behavior === "celestial");
+  }
+
+  // Group all celestial cells by element id into round "bodies" (centroid +
+  // radius), so each blob of e.g. sun cells becomes one disc. A flood scan keeps
+  // separate blobs of the same element distinct.
+  _collectCelestialBodies() {
+    const { W, H, grid } = this;
+    const bodies = [];
+    let seen = this._celSeen;
+    if (!seen || seen.length !== grid.length) seen = this._celSeen = new Uint8Array(grid.length);
+    else seen.fill(0);
+    const stack = [];
+    for (let i = 0; i < grid.length; i++) {
+      const id = grid[i];
+      if (seen[i] || !this._isCelestial(id)) continue;
+      // BFS flood over same-id celestial cells
+      let sx = 0, sy = 0, n = 0, count = 0;
+      stack.length = 0; stack.push(i); seen[i] = 1;
+      while (stack.length) {
+        const ci = stack.pop();
+        const cx = ci % W, cy = (ci / W) | 0;
+        sx += cx; sy += cy; n++; count++;
+        const nb = [ci - 1, ci + 1, ci - W, ci + W];
+        const xs = [cx - 1, cx + 1, cx, cx];
+        const ys = [cy, cy, cy - 1, cy + 1];
+        for (let k = 0; k < 4; k++) {
+          const nx = xs[k], ny = ys[k], ni = nb[k];
+          if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
+          if (seen[ni] || grid[ni] !== id) continue;
+          seen[ni] = 1; stack.push(ni);
+        }
+      }
+      if (!n) continue;
+      const r = Math.max(1.6, Math.sqrt(count / Math.PI));
+      bodies.push({ id, cx: sx / n + 0.5, cy: sy / n + 0.5, r });
+    }
+    return bodies;
+  }
+
+  // Draw celestial bodies as smooth glowing discs in CANVAS px. Sun/star get a
+  // hot radial glow + corona; the moon a soft lit sphere with a faint halo.
+  _renderCelestialBodies(bodies) {
+    if (!bodies.length) return;
+    const ctx = this.ctx, cell = this.cell;
+    ctx.save();
+    for (const b of bodies) {
+      const px = b.cx * cell, py = b.cy * cell;
+      const rad = b.r * cell;
+      const p = this.phys(b.id);
+      const hot = p && p.temp != null && p.temp >= 200;
+      const core = this.colorById.get(b.id) || (hot ? "#ffcf3a" : "#cfcfcf");
+      // outer glow / corona (additive so it blooms against the sky)
+      ctx.globalCompositeOperation = "lighter";
+      const glowR = rad * (hot ? 2.4 : 1.7);
+      const g = ctx.createRadialGradient(px, py, rad * 0.3, px, py, glowR);
+      if (hot) {
+        g.addColorStop(0, "rgba(255,240,200,0.55)");
+        g.addColorStop(0.4, "rgba(255,180,70,0.30)");
+        g.addColorStop(1, "rgba(255,140,40,0)");
+      } else {
+        g.addColorStop(0, "rgba(200,210,230,0.30)");
+        g.addColorStop(0.5, "rgba(150,165,200,0.14)");
+        g.addColorStop(1, "rgba(120,140,180,0)");
+      }
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(px, py, glowR, 0, Math.PI * 2); ctx.fill();
+      // solid body disc (normal blend) with a soft shaded sphere
+      ctx.globalCompositeOperation = "source-over";
+      const bg = ctx.createRadialGradient(
+        px - rad * 0.3, py - rad * 0.3, rad * 0.1, px, py, rad);
+      if (hot) {
+        bg.addColorStop(0, "#fff6da");
+        bg.addColorStop(0.6, core);
+        bg.addColorStop(1, "#e8902a");
+      } else {
+        bg.addColorStop(0, "#f2f4f8");
+        bg.addColorStop(0.6, core);
+        bg.addColorStop(1, "#8b93a3");
+      }
+      ctx.fillStyle = bg;
+      ctx.beginPath(); ctx.arc(px, py, rad, 0, Math.PI * 2); ctx.fill();
+      // moon: a couple of subtle craters for character
+      if (!hot) {
+        ctx.fillStyle = "rgba(120,128,145,0.35)";
+        ctx.beginPath(); ctx.arc(px + rad * 0.25, py - rad * 0.2, rad * 0.22, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(px - rad * 0.3, py + rad * 0.28, rad * 0.16, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
+
+  // Map a temperature (°C) to a heatmap colour: deep blue (cold) → cyan → green
+  // → yellow → orange → white-hot. Used by the Temperature view.
+  _tempColor(t) {
+    // normalise across the configured climate range for good spread
+    const lo = Math.min(this.tempMin, -20), hi = Math.max(this.tempMax, 1200);
+    let f = (t - lo) / (hi - lo);
+    f = Math.max(0, Math.min(1, f));
+    // piecewise gradient stops {f, r,g,b}
+    const stops = [
+      [0.00,  20,  30,  90],   // cold deep blue
+      [0.18,  30, 110, 210],   // blue
+      [0.34,  40, 200, 200],   // cyan
+      [0.48,  60, 200,  90],   // green
+      [0.62, 230, 210,  60],   // yellow
+      [0.78, 240, 130,  40],   // orange
+      [0.90, 240,  60,  40],   // red
+      [1.00, 255, 245, 235],   // white hot
+    ];
+    for (let k = 1; k < stops.length; k++) {
+      if (f <= stops[k][0]) {
+        const a = stops[k - 1], b = stops[k];
+        const u = (f - a[0]) / (b[0] - a[0] || 1);
+        const r = a[1] + (b[1] - a[1]) * u;
+        const g = a[2] + (b[2] - a[2]) * u;
+        const bl = a[3] + (b[3] - a[3]) * u;
+        return `rgb(${r|0},${g|0},${bl|0})`;
+      }
+    }
+    return "rgb(255,245,235)";
+  }
+
+  // Map a pressure value to a heatmap colour. Pressure is stored as buildup over
+  // ambient; we display absolute atm (1 + buildup). 1 atm = calm slate; rising
+  // pressure heads through teal/green/yellow to a hot red at very high pressure.
+  _pressureColor(pBuildup) {
+    const atm = 1 + Math.max(0, pBuildup);
+    // map 1..5 atm onto 0..1
+    let f = (atm - 1) / 4;
+    f = Math.max(0, Math.min(1, f));
+    const stops = [
+      [0.00,  46,  58,  74],   // 1 atm calm slate
+      [0.22,  40, 140, 150],   // teal
+      [0.45,  70, 180,  90],   // green
+      [0.68, 220, 200,  60],   // yellow
+      [0.85, 235, 130,  45],   // orange
+      [1.00, 240,  50,  45],   // high-pressure red
+    ];
+    for (let k = 1; k < stops.length; k++) {
+      if (f <= stops[k][0]) {
+        const a = stops[k - 1], b = stops[k];
+        const u = (f - a[0]) / (b[0] - a[0] || 1);
+        const r = a[1] + (b[1] - a[1]) * u;
+        const g = a[2] + (b[2] - a[2]) * u;
+        const bl = a[3] + (b[3] - a[3]) * u;
+        return `rgb(${r|0},${g|0},${bl|0})`;
+      }
+    }
+    return "rgb(240,50,45)";
+  }
+
   render() {
+    if (this.viewMode === "temperature" || this.viewMode === "pressure") {
+      this._renderField(this.viewMode);
+      return;
+    }
     const { ctx, W, H, cell, grid } = this;
-    ctx.fillStyle = "#0b0e14";
+    // No vacuum: paint a faint air wash behind everything so empty cells read as
+    // a room full of air, never a black void.
+    ctx.fillStyle = this.airBaseDark;
     ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
     for (let y = 0; y < H; y++) {
       for (let x = 0; x < W; x++) {
         const i = this.idx(x, y);
         const id = grid[i];
         if (!id) continue;
+        if (this._isCelestial(id)) continue; // drawn as discs below
         let color = this.colorById.get(id) || "#9aa3ad";
         // temperature glow tint for hot cells
         const t = this.temp[i];
@@ -1494,9 +1685,86 @@ export class Sandbox {
         ctx.fillRect(x * cell, y * cell, cell, cell);
       }
     }
+    this._renderCelestialBodies(this._collectCelestialBodies());
     this.renderFX();
     this.renderWeather();
     if (this.showAxes) this._drawAxes();
+  }
+
+  // Render the Temperature or Pressure field: EVERY cell (including the open
+  // air — there is no vacuum) is filled with a heatmap colour. Celestial bodies
+  // are still drawn as discs on top so the sun/moon stay recognisable, then a
+  // small legend is painted in the corner.
+  _renderField(mode) {
+    const { ctx, W, H, cell, grid, temp, pressure } = this;
+    ctx.fillStyle = mode === "temperature" ? "#0a0d12" : "#0a0d12";
+    ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const i = this.idx(x, y);
+        ctx.fillStyle = mode === "temperature"
+          ? this._tempColor(temp[i])
+          : this._pressureColor(pressure[i]);
+        ctx.fillRect(x * cell, y * cell, cell, cell);
+      }
+    }
+    // celestial discs stay visible (drawn faintly under a translucent veil so
+    // the field still reads through them)
+    this._renderCelestialBodies(this._collectCelestialBodies());
+    this._renderFieldLegend(mode);
+    if (this.showAxes) this._drawAxes();
+  }
+
+  // Small gradient legend + label for the active field view, bottom-left.
+  _renderFieldLegend(mode) {
+    const ctx = this.ctx;
+    const W = this.canvas.width, H = this.canvas.height;
+    const barW = Math.min(150, Math.max(90, W * 0.18));
+    const barH = 9;
+    const pad = 10;
+    // bottom-right corner (keeps clear of the bottom-left coords readout)
+    const x0 = W - pad - barW, y0 = H - pad - barH - 14;
+    ctx.save();
+    // build gradient from the same colour function
+    const grad = ctx.createLinearGradient(x0, 0, x0 + barW, 0);
+    if (mode === "temperature") {
+      for (let s = 0; s <= 10; s++) {
+        const f = s / 10;
+        const t = (Math.min(this.tempMin, -20)) + f * ((Math.max(this.tempMax, 1200)) - (Math.min(this.tempMin, -20)));
+        grad.addColorStop(f, this._tempColor(t));
+      }
+    } else {
+      for (let s = 0; s <= 10; s++) {
+        const f = s / 10;
+        grad.addColorStop(f, this._pressureColor(f * 4));
+      }
+    }
+    // label
+    ctx.font = "600 11px ui-sans-serif, system-ui, sans-serif";
+    ctx.textBaseline = "alphabetic";
+    ctx.fillStyle = "rgba(255,255,255,0.92)";
+    const label = mode === "temperature" ? "\uD83C\uDF21 Temperature" : "\u23F2 Pressure";
+    ctx.fillText(label, x0, y0 - 4);
+    // bar with subtle border
+    ctx.fillStyle = grad;
+    ctx.fillRect(x0, y0, barW, barH);
+    ctx.strokeStyle = "rgba(255,255,255,0.35)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x0 + 0.5, y0 + 0.5, barW, barH);
+    // end labels
+    ctx.font = "10px ui-monospace, Menlo, Consolas, monospace";
+    ctx.fillStyle = "rgba(255,255,255,0.78)";
+    ctx.textBaseline = "top";
+    if (mode === "temperature") {
+      ctx.fillText(`${Math.round(Math.min(this.tempMin, -20))}\u00b0`, x0, y0 + barH + 2);
+      const hot = `${Math.round(Math.max(this.tempMax, 1200))}\u00b0`;
+      ctx.fillText(hot, x0 + barW - ctx.measureText(hot).width, y0 + barH + 2);
+    } else {
+      ctx.fillText("1 atm", x0, y0 + barH + 2);
+      const hi = "5+ atm";
+      ctx.fillText(hi, x0 + barW - ctx.measureText(hi).width, y0 + barH + 2);
+    }
+    ctx.restore();
   }
 
   // Faint x/y ruler ticks + coordinate labels along the top and left edges,

@@ -1126,6 +1126,16 @@ body.catalog-mode .drawer-toggle { display: none !important; }
 .shape-btn.is-active { color: var(--accent); background: var(--accent-soft); border-color: var(--accent-line); }
 .shape-btn.fill-btn { font-size: 11px; font-weight: 800; letter-spacing: .02em; padding: 5px 9px; }
 
+/* ---- view-mode toggle (Normal / Temperature / Pressure heatmaps) ---- */
+.sb-view-tools { display: inline-flex; align-items: center; gap: 4px; padding: 2px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+.view-btn { font: inherit; font-size: 11px; font-weight: 700; letter-spacing: .01em; line-height: 1;
+  cursor: pointer; color: var(--muted); background: transparent; border: 1px solid transparent;
+  border-radius: 7px; padding: 5px 9px; transition: background .12s, color .12s, border-color .12s; }
+.view-btn:hover { color: var(--text); background: var(--elev); }
+.view-btn.is-active { color: var(--accent); background: var(--accent-soft); border-color: var(--accent-line); }
+@media (max-width: 760px) { .sb-view-tools { gap: 2px; } .view-btn { padding: 5px 6px; } }
+
 /* ---- live x/y / px / tps coordinate readout (bottom-left of the canvas) ---- */
 .sb-coords { position: absolute; left: 8px; bottom: 8px; z-index: 7; display: flex; gap: 8px;
   padding: 4px 9px; border-radius: 9px; background: rgba(16,20,28,.78); border: 1px solid var(--line);

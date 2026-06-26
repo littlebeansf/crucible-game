@@ -674,9 +674,8 @@
       "phys": {
         "state": "energy",
         "density": 0.2,
-        "behavior": "fire",
+        "behavior": "celestial",
         "temp": 5500,
-        "lifespan": 9999,
         "color": "#ffcf3a"
       },
       "base": false,
@@ -3381,9 +3380,8 @@
       "phys": {
         "state": "energy",
         "density": 0.2,
-        "behavior": "fire",
+        "behavior": "celestial",
         "temp": 6000,
-        "lifespan": 9999,
         "color": "#ffe066"
       },
       "base": false,
@@ -3457,7 +3455,7 @@
       "phys": {
         "state": "solid",
         "density": 3.3,
-        "behavior": "static",
+        "behavior": "celestial",
         "color": "#cfcfcf"
       },
       "base": false,
