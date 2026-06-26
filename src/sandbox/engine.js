@@ -285,7 +285,7 @@ export class Sandbox {
   }
 
   // ---- serialize / deserialize (save slots) ----
-  // Compact RLE of the grid so saved states stay small in localStorage.
+  // Compact RLE of the grid so saved states stay small when persisted.
   serialize() {
     const g = this.grid, n = g.length;
     const rle = [];
