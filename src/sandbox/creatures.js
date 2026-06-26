@@ -87,6 +87,42 @@ export class CreatureSystem {
 
   clear() { this.list.length = 0; this.selected = null; this._notify(); }
 
+  // ---- save / load: compact snapshot of all living creatures for save slots ----
+  // We persist only the fields needed to restore a creature; spec is re-derived
+  // from kind on load. Remains/fading creatures are skipped.
+  serialize() {
+    const out = [];
+    for (const cr of this.list) {
+      if (!cr.alive) continue;
+      out.push({
+        k: cr.kind,
+        x: Math.round(cr.x), y: Math.round(cr.y),
+        vx: +cr.vx.toFixed(2), vy: +cr.vy.toFixed(2),
+        h: Math.round(cr.health), e: Math.round(cr.energy), a: cr.age,
+        f: cr.facing,
+      });
+    }
+    return out;
+  }
+
+  deserialize(arr) {
+    this.list.length = 0;
+    this.selected = null;
+    if (!Array.isArray(arr)) { this._notify(); return; }
+    for (const c of arr) {
+      const spec = SPECIES[c.k];
+      if (!spec) continue;
+      const cr = this.spawn(c.k, c.x, c.y);
+      if (!cr) continue;
+      cr.vx = c.vx || 0; cr.vy = c.vy || 0;
+      cr.health = c.h != null ? c.h : 100;
+      cr.energy = c.e != null ? c.e : 70;
+      cr.age = c.a || 0;
+      cr.facing = c.f || 1;
+    }
+    this._notify();
+  }
+
   count() { return this.list.length; }
 
   // population split by habitat
@@ -220,6 +256,31 @@ export class CreatureSystem {
     if (c.oob) return this.sb.ambient;
     return this.sb.temp[this.sb.idx(c.cx, c.cy)];
   }
+  pressureAt(px, py) {
+    const c = this.cellAt(px, py);
+    if (c.oob) return 0;
+    return this.sb.pressure[this.sb.idx(c.cx, c.cy)];
+  }
+
+  // Is the cell at (px,py) a SUFFOCATING gas/powder for air-breathers? Smoke,
+  // CO2, poison/toxic gas and other dense fumes displace breathable air. We
+  // treat any non-water gas whose id/tags signal toxicity or smoke as choking,
+  // plus the explicit smoke/co2/poison ids. Steam is hot but breathable-ish, so
+  // it's excluded (its heat is handled separately).
+  isSuffocatingGas(px, py) {
+    const c = this.cellAt(px, py);
+    if (!c.id) return false;
+    const sb = this.sb;
+    const st = sb.state(c.id);
+    if (st !== "gas") return false;
+    if (c.id === "steam" || c.id === "water_vapor") return false;
+    const choke = { smoke: 1, co2: 1, carbon_dioxide: 1, poison: 1, poison_gas: 1,
+      toxic_gas: 1, chlorine: 1, methane: 1, carbon_monoxide: 1, nitrogen: 1 };
+    if (choke[c.id]) return true;
+    const el = sb.elements && sb.elements[c.id];
+    const tags = (el && el.tags) || [];
+    return tags.includes("toxic") || tags.includes("suffocant") || tags.includes("smoke");
+  }
 
   // nearest creature of a given kind (for dog->human, predator->prey)
   nearestOf(cr, kindTest, maxDist) {
@@ -301,6 +362,17 @@ export class CreatureSystem {
     if (t > 80) cr.health -= Math.min(3, (t - 80) / 60);
     if (t < -5) cr.health -= Math.min(2, (-t) / 30);
 
+    // --- GAS SUFFOCATION: air-breathers choke in smoke / toxic / dense fumes ---
+    // Swimmers (fish/shark) breathe water so smoke in air doesn't apply to them;
+    // everyone else takes damage and is flagged distressed while engulfed.
+    if (spec.loco !== "swim" && this.isSuffocatingGas(cr.x, cr.y)) {
+      cr.health -= 3.5;
+      cr.state = "Suffocating!";
+      cr.choking = true;
+    } else {
+      cr.choking = false;
+    }
+
     if (spec.loco === "swim") {
       // FISH/SHARK: need water. Out of water = suffocating.
       if (!inWater) { cr.health -= 4; cr.state = "Suffocating!"; }
@@ -358,6 +430,13 @@ export class CreatureSystem {
       return;
     }
 
+    // --- ENVIRONMENTAL FORCES: tornado lift/swirl + high-pressure shove ---
+    // A tornado near the creature picks it up (especially light flyers/small
+    // bodies) and flings it toward & up the funnel. High local pressure shoves
+    // it away from the source. These push velocity directly so the creature is
+    // physically thrown by the weather/pressure systems.
+    this._applyEnvForces(cr);
+
     // --- steering & movement per locomotion ---
     switch (spec.loco) {
       case "swim": this._swim(cr, W, H); break;
@@ -373,6 +452,42 @@ export class CreatureSystem {
     if (cr.y < 4) { cr.y = 4; cr.vy = Math.abs(cr.vy) * 0.3; }
     if (cr.y > H - 4) { cr.y = H - 4; cr.vy = Math.min(0, cr.vy); }
     if (cr.vx !== 0) cr.facing = cr.vx < 0 ? -1 : 1;
+  }
+
+  // Tornado lift/swirl + high-pressure shove. Called each frame per creature.
+  _applyEnvForces(cr) {
+    const sb = this.sb, cell = sb.cell;
+    // --- tornado ---
+    const w = sb.weather;
+    if (w && w.kind === "tornado" && w.funnelX != null) {
+      const funnelPx = w.funnelX * cell;
+      const radiusPx = (w.funnelR || 4) * cell;
+      const dx = cr.x - funnelPx;
+      if (Math.abs(dx) < radiusPx * 2.2) {
+        // lighter creatures get tossed harder (flyers + small bodies)
+        const mass = (cr.spec.size || 16) / 16;
+        const pull = (1 - Math.min(1, Math.abs(dx) / (radiusPx * 2.2))) / mass;
+        // suck toward the funnel centre, spin, and lift upward
+        cr.vx += (-Math.sign(dx) || 1) * pull * 1.6;
+        cr.vx += Math.cos(sb.frame * 0.4 + cr.uid) * pull * 1.2; // swirl
+        cr.vy -= pull * 2.4; // lift
+        cr.state = "Caught in tornado!";
+      }
+    }
+    // --- high-pressure shove (push away from the highest-pressure neighbour) ---
+    const pHere = this.pressureAt(cr.x, cr.y);
+    if (pHere >= 1.8) {
+      let bestP = pHere, bx = 0, by = 0;
+      const dirs = [[-1,0],[1,0],[0,-1],[0,1]];
+      for (const [ox, oy] of dirs) {
+        const p = this.pressureAt(cr.x + ox * cell, cr.y + oy * cell);
+        if (p > bestP) { bestP = p; bx = ox; by = oy; }
+      }
+      // push AWAY from the higher-pressure side
+      const force = Math.min(2.5, (pHere - 1.0) * 0.6);
+      cr.vx -= bx * force; cr.vy -= by * force;
+      if (bestP >= 2.4 && cr.state !== "Caught in tornado!") cr.state = "Pushed by pressure!";
+    }
   }
 
   // is a hazard cell within `cells` of the creature centre (8-neighbourhood)?

@@ -1109,6 +1109,11 @@ function setupSandbox() {
 
   let painting = false;
   let draggingCreature = null;   // creature being repositioned via drag
+  // --- shape tool state: "brush" (free paint), "box", or "circle" ---
+  let shapeMode = "brush";
+  let shapeFill = true;
+  let shapeStart = null;         // {cx, cy} drag origin in CELL coords for box/circle
+  const shapePreview = $("#sb-shape-preview");
   const paintAt = e => {
     const { px, py } = pxFromEvent(e);
     // Life tools (tool id "creature:<kind>") spawn living creatures, not cells.
@@ -1125,14 +1130,21 @@ function setupSandbox() {
   const tip = $("#sb-tooltip");
   let tipId = null;
   // HUD readout nodes (live temp / pressure / phase under the cursor)
-  const hudTemp = $("#hud-temp"), hudPress = $("#hud-press"), hudPhase = $("#hud-phase"), hudEl = $("#hud-el");
+  const hudTemp = $("#hud-temp"), hudPress = $("#hud-press"), hudPhase = $("#hud-phase"), hudEl = $("#hud-el"), hudNext = $("#hud-next");
+  // coords overlay (grid x/y under the cursor — px count + tps updated in loop)
+  const sbcXY = $("#sbc-xy");
   const updateTip = e => {
     const { px, py } = pxFromEvent(e);
+    if (sbcXY) {
+      const { cx, cy } = sandbox.cellOfPixel(px, py);
+      sbcXY.textContent = `x${cx} y${cy}`;
+    }
     // when hovering a creature, show its species + live state instead of cell info
     const hoverCr = creatures.pick(px, py);
     if (hoverCr) {
       hudEl.textContent = hoverCr.spec.name;
       hudPhase.textContent = hoverCr.state;
+      if (hudNext) hudNext.textContent = `❤ ${Math.round(hoverCr.health)}  ⚡ ${Math.round(hoverCr.energy)}`;
       if (tipId !== "cr:" + hoverCr.uid) {
         tip.innerHTML = `<span class="tt-ic">${hoverCr.spec.emoji}</span><span class="tt-name">${hoverCr.spec.name} — ${hoverCr.state}</span>`;
         tipId = "cr:" + hoverCr.uid;
@@ -1152,6 +1164,7 @@ function setupSandbox() {
       hudPress.textContent = `${(1 + ro.pressure).toFixed(1)} atm`;
       hudPhase.textContent = ro.phase || "—";
       hudEl.textContent = ro.name || "empty";
+      if (hudNext) hudNext.textContent = ro.nextChange || "";
     }
     if (!id) {
       if (tipId !== null) { tip.classList.remove("show"); tipId = null; }
@@ -1211,6 +1224,42 @@ function setupSandbox() {
     logEmpty();
   });
 
+  // Draw the live drag preview for box/circle onto the overlay canvas.
+  const sizeShapePreview = () => {
+    if (!shapePreview) return;
+    shapePreview.width = canvas.width; shapePreview.height = canvas.height;
+  };
+  const drawShapePreview = (cx1, cy1) => {
+    if (!shapePreview || !shapeStart) return;
+    sizeShapePreview();
+    const ctx = shapePreview.getContext("2d");
+    ctx.clearRect(0, 0, shapePreview.width, shapePreview.height);
+    const cell = sandbox.cell;
+    const x0 = Math.min(shapeStart.cx, cx1), x1 = Math.max(shapeStart.cx, cx1);
+    const y0 = Math.min(shapeStart.cy, cy1), y1 = Math.max(shapeStart.cy, cy1);
+    ctx.save();
+    ctx.strokeStyle = "rgba(120,220,255,0.9)";
+    ctx.fillStyle = "rgba(120,220,255,0.18)";
+    ctx.lineWidth = 1.5;
+    if (shapeMode === "box") {
+      const rx = x0 * cell, ry = y0 * cell, rw = (x1 - x0 + 1) * cell, rh = (y1 - y0 + 1) * cell;
+      if (shapeFill) ctx.fillRect(rx, ry, rw, rh);
+      ctx.strokeRect(rx, ry, rw, rh);
+    } else if (shapeMode === "circle") {
+      const ccx = (x0 + x1 + 1) / 2 * cell, ccy = (y0 + y1 + 1) / 2 * cell;
+      const rxr = (x1 - x0 + 1) / 2 * cell, ryr = (y1 - y0 + 1) / 2 * cell;
+      ctx.beginPath(); ctx.ellipse(ccx, ccy, Math.max(1, rxr), Math.max(1, ryr), 0, 0, Math.PI * 2);
+      if (shapeFill) ctx.fill();
+      ctx.stroke();
+    }
+    ctx.restore();
+  };
+  const clearShapePreview = () => {
+    if (!shapePreview) return;
+    const ctx = shapePreview.getContext("2d");
+    ctx.clearRect(0, 0, shapePreview.width, shapePreview.height);
+  };
+
   canvas.addEventListener("pointerdown", e => {
     const { px, py } = pxFromEvent(e);
     // Right-click (or ctrl/middle) removes a creature under the cursor.
@@ -1229,6 +1278,13 @@ function setupSandbox() {
         return;
       }
     }
+    // SHAPE TOOL: box/circle drag a region, then stamp on release.
+    if ((shapeMode === "box" || shapeMode === "circle") && !isLifeTool && sandbox.currentTool) {
+      const c = sandbox.cellOfPixel(px, py);
+      shapeStart = { cx: c.cx, cy: c.cy };
+      canvas.setPointerCapture(e.pointerId);
+      return;
+    }
     painting = true; canvas.setPointerCapture(e.pointerId); paintAt(e);
   });
   canvas.addEventListener("pointermove", e => {
@@ -1238,11 +1294,49 @@ function setupSandbox() {
       draggingCreature.vx = 0; draggingCreature.vy = 0;
       return;
     }
+    if (shapeStart) {
+      const { px, py } = pxFromEvent(e);
+      const c = sandbox.cellOfPixel(px, py);
+      drawShapePreview(c.cx, c.cy);
+      updateTip(e);
+      return;
+    }
     if (painting) paintAt(e);
     updateTip(e);
   });
-  canvas.addEventListener("pointerup", () => { painting = false; draggingCreature = null; });
-  canvas.addEventListener("pointerleave", () => { painting = false; draggingCreature = null; hideTip(); });
+  const finishShape = (e) => {
+    if (!shapeStart) return false;
+    const { px, py } = pxFromEvent(e);
+    const c = sandbox.cellOfPixel(px, py);
+    const id = sandbox.currentTool === "eraser" ? 0 : sandbox.currentTool;
+    const opts = { fill: shapeFill, thickness: 1 };
+    if (shapeMode === "box") sandbox.stampRect(shapeStart.cx, shapeStart.cy, c.cx, c.cy, id, opts);
+    else if (shapeMode === "circle") sandbox.stampEllipse(shapeStart.cx, shapeStart.cy, c.cx, c.cy, id, opts);
+    shapeStart = null;
+    clearShapePreview();
+    audio.sfx("click");
+    return true;
+  };
+  canvas.addEventListener("pointerup", (e) => {
+    finishShape(e);
+    painting = false; draggingCreature = null;
+  });
+  canvas.addEventListener("pointerleave", () => { painting = false; draggingCreature = null; shapeStart = null; clearShapePreview(); hideTip(); });
+
+  // --- shape tool toolbar wiring ---
+  const shapeBtns = $$("#sb-shape-tools .shape-btn[data-shape]");
+  const setShapeMode = (m) => {
+    shapeMode = m;
+    shapeBtns.forEach(b => b.classList.toggle("is-active", b.dataset.shape === m));
+  };
+  shapeBtns.forEach(b => b.addEventListener("click", () => { setShapeMode(b.dataset.shape); audio.sfx("click"); }));
+  const fillBtn = $("#sb-shape-fill");
+  fillBtn?.addEventListener("click", () => {
+    shapeFill = !shapeFill;
+    fillBtn.classList.toggle("is-active", shapeFill);
+    fillBtn.textContent = shapeFill ? "Fill" : "Line";
+    audio.sfx("click");
+  });
   // suppress the browser context menu so right-click can remove creatures
   canvas.addEventListener("contextmenu", e => e.preventDefault());
 
@@ -1282,12 +1376,28 @@ function setupSandbox() {
 
   renderQuickBar();
 
-  // render loop — creatures step & draw on top of the cell grid
-  const loop = () => {
-    sandbox.step();
+  // render loop — creatures step & draw on top of the cell grid.
+  // `sandbox.speed` runs N physics steps per frame (0 = paused-ish, 1 step);
+  // we also feed a lightweight tps/px-count readout into the coords overlay.
+  const sbcCount = $("#sbc-count"), sbcTps = $("#sbc-tps");
+  let _tpsAccum = 0, _tpsLast = performance.now(), _tpsFrames = 0;
+  const loop = (now) => {
+    const steps = Math.max(1, sandbox.speed | 0);
+    for (let s = 0; s < steps; s++) {
+      sandbox.step();
+      if (sandbox.running) creatures.step();
+      _tpsAccum++;
+    }
     sandbox.render();
-    if (sandbox.running) creatures.step();
     creatures.render(sandbox.ctx);
+    // update tps / filled-cell counters about 4× a second
+    _tpsFrames++;
+    const dt = (now || performance.now()) - _tpsLast;
+    if (dt >= 250) {
+      if (sbcTps) sbcTps.textContent = `${Math.round((_tpsAccum * 1000) / dt)} tps`;
+      if (sbcCount) sbcCount.textContent = `${sandbox.countFilled()} px`;
+      _tpsAccum = 0; _tpsLast = now || performance.now(); _tpsFrames = 0;
+    }
     requestAnimationFrame(loop);
   };
   requestAnimationFrame(loop);
@@ -1299,6 +1409,242 @@ function setupSandbox() {
   setupClimate();
   // Live "Life" stats panel + Life palette (creature placement tools).
   setupLife();
+  // Simulation controls (speed / air temp / gravity / temp limits / canvas res).
+  setupSim();
+  // Animated, time-limited weather events (snow / storm / tornado / lightning).
+  setupWeather();
+  // Save slots — capture & restore the current sandbox state (max 10).
+  setupSaves();
+}
+
+/* ---------------------------------------------------------------------------
+   SIM — simulation controls: speed, air temp, gravity/density, temperature
+   limits (absolute-zero floor / max ceiling) and canvas resolution.
+--------------------------------------------------------------------------- */
+function setupSim() {
+  const panel = $("#sb-sim");
+  const toggle = $("#sb-sim-toggle");
+  if (!panel || !toggle) return;
+
+  toggle.addEventListener("click", () => {
+    const open = panel.classList.toggle("open");
+    toggle.classList.toggle("active", open);
+    if (open) { closeOtherSbPanels("sim"); audio.sfx("click"); }
+  });
+  $("#sb-sim-close")?.addEventListener("click", () => { panel.classList.remove("open"); toggle.classList.remove("active"); });
+
+  const speed = $("#sim-speed"), speedVal = $("#sim-speed-val");
+  const air = $("#sim-air"), airVal = $("#sim-air-val");
+  const grav = $("#sim-grav"), gravVal = $("#sim-grav-val");
+  const tmin = $("#sim-tmin"), tminVal = $("#sim-tmin-val");
+  const tmax = $("#sim-tmax"), tmaxVal = $("#sim-tmax-val");
+
+  // Speed — N physics steps per frame (0 shown as ½, runs 1 step but feels slow)
+  const SPEED_LABEL = { 0: "½×", 1: "1×", 2: "2×", 3: "3×", 4: "4×" };
+  if (speed) speed.addEventListener("input", () => {
+    const v = +speed.value;
+    sandbox.speed = Math.max(1, v); // engine always runs ≥1 step
+    if (speedVal) speedVal.textContent = SPEED_LABEL[v] || `${v}×`;
+  });
+
+  // Air temp — drives the climate regulator (kept in sync both ways)
+  if (air) air.addEventListener("input", () => {
+    const v = +air.value;
+    if (airVal) airVal.textContent = `${v}°C`;
+    setClimateTemp(v);
+  });
+
+  // Gravity / density multiplier
+  if (grav) grav.addEventListener("input", () => {
+    const v = +grav.value;
+    sandbox.gravity = v;
+    if (gravVal) gravVal.textContent = `${v.toFixed(1)}×`;
+  });
+
+  // Absolute-zero floor (min temperature the world can reach)
+  if (tmin) tmin.addEventListener("input", () => {
+    const v = +tmin.value;
+    sandbox.tempMin = v;
+    if (tminVal) tminVal.textContent = `${v}`;
+  });
+
+  // Max temperature ceiling
+  if (tmax) tmax.addEventListener("input", () => {
+    const v = +tmax.value;
+    sandbox.tempMax = v;
+    if (tmaxVal) tmaxVal.textContent = `${v}`;
+  });
+
+  // Canvas resolution — changing cell size rebuilds the grid (clears the board)
+  panel.querySelectorAll(".sim-canvas-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const cell = +btn.dataset.cell;
+      if (!cell || cell === sandbox.cell) return;
+      panel.querySelectorAll(".sim-canvas-btn").forEach(b => b.classList.toggle("is-active", b === btn));
+      sandbox.cell = cell;
+      sandbox.resize();
+      sandbox.clearAll?.();
+      audio.sfx("click");
+      toast(`Canvas: ${btn.textContent.trim()} (${sandbox.W}×${sandbox.H})`);
+    });
+  });
+
+  // initialise readouts from engine state
+  if (speed) { speed.value = String(sandbox.speed); if (speedVal) speedVal.textContent = SPEED_LABEL[sandbox.speed] || `${sandbox.speed}×`; }
+  if (grav)  { grav.value = String(sandbox.gravity); if (gravVal) gravVal.textContent = `${(+sandbox.gravity).toFixed(1)}×`; }
+  if (tmin)  { tmin.value = String(sandbox.tempMin); if (tminVal) tminVal.textContent = `${sandbox.tempMin}`; }
+  if (tmax)  { tmax.value = String(sandbox.tempMax); if (tmaxVal) tmaxVal.textContent = `${sandbox.tempMax}`; }
+}
+
+/* ---------------------------------------------------------------------------
+   WEATHER — trigger animated, time-limited weather events. The engine plays
+   each event out over a fixed number of frames, then stops & restores ambient.
+--------------------------------------------------------------------------- */
+function setupWeather() {
+  const panel = $("#sb-weather");
+  const toggle = $("#sb-weather-toggle");
+  if (!panel || !toggle) return;
+
+  const statusEl = $("#wx-status");
+  const WX_NAME = { snow: "❄️ Snow", storm: "⛈️ Storm", tornado: "🌪️ Tornado", lightning: "⚡ Lightning" };
+  const WX_FRAMES = { snow: 720, storm: 720, tornado: 600, lightning: 360 };
+
+  toggle.addEventListener("click", () => {
+    const open = panel.classList.toggle("open");
+    toggle.classList.toggle("active", open);
+    if (open) { closeOtherSbPanels("weather"); audio.sfx("click"); refreshStatus(); }
+  });
+  $("#sb-weather-close")?.addEventListener("click", () => { panel.classList.remove("open"); toggle.classList.remove("active"); });
+
+  const refreshStatus = () => {
+    if (!statusEl) return;
+    if (sandbox.weatherActive && sandbox.weatherActive()) {
+      const w = sandbox.weather;
+      const pct = Math.max(0, Math.round((w.ttl / w.max) * 100));
+      statusEl.textContent = `${WX_NAME[w.kind] || w.kind} active — ${pct}% left`;
+      panel.querySelectorAll(".wx-btn").forEach(b => b.classList.toggle("is-active", b.dataset.weather === w.kind));
+    } else {
+      statusEl.textContent = "No active weather.";
+      panel.querySelectorAll(".wx-btn").forEach(b => b.classList.remove("is-active"));
+    }
+  };
+
+  panel.querySelectorAll(".wx-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const kind = btn.dataset.weather;
+      sandbox.startWeather(kind, WX_FRAMES[kind] || 600);
+      audio.sfx(kind === "snow" ? "freeze" : "click");
+      refreshStatus();
+    });
+  });
+  $("#wx-stop")?.addEventListener("click", () => { sandbox.stopWeather(); audio.sfx("click"); refreshStatus(); });
+
+  // keep the status line live while the panel is open
+  setInterval(() => { if (panel.classList.contains("open")) refreshStatus(); }, 400);
+}
+
+/* ---------------------------------------------------------------------------
+   SAVE SLOTS — capture the current sandbox grid + creatures into named slots
+   (max 10), stored via the persistent storage shim. Load / delete from a list.
+--------------------------------------------------------------------------- */
+const SAVES_KEY = "crucible_sb_slots";
+const SAVES_MAX = 10;
+function setupSaves() {
+  const panel = $("#sb-saves");
+  const toggle = $("#sb-saves-toggle");
+  if (!panel || !toggle) return;
+
+  const nameInput = $("#saves-name");
+  const saveBtn = $("#saves-save");
+  const listEl = $("#saves-list");
+  const countEl = $("#saves-count");
+
+  const readSlots = () => {
+    try { const raw = storage.get(SAVES_KEY); const a = raw ? JSON.parse(raw) : []; return Array.isArray(a) ? a : []; }
+    catch { return []; }
+  };
+  const writeSlots = (slots) => { try { storage.set(SAVES_KEY, JSON.stringify(slots)); } catch {} };
+
+  const fmtWhen = (ts) => {
+    const d = new Date(ts);
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " +
+           d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  };
+
+  const render = () => {
+    const slots = readSlots();
+    if (countEl) countEl.textContent = `${slots.length}/${SAVES_MAX}`;
+    if (saveBtn) saveBtn.disabled = slots.length >= SAVES_MAX;
+    if (!listEl) return;
+    if (!slots.length) {
+      listEl.innerHTML = `<div class="saves-empty">No saves yet. Build a scene, name it, and hit “Save current”.</div>`;
+      return;
+    }
+    listEl.innerHTML = "";
+    slots.forEach((s, i) => {
+      const row = document.createElement("div");
+      row.className = "saves-row";
+      row.innerHTML =
+        `<div class="saves-meta"><b class="saves-title"></b>` +
+        `<small class="saves-sub">${s.px || 0} px · ${s.cr || 0} life · ${fmtWhen(s.ts)}</small></div>` +
+        `<div class="saves-actions">` +
+        `<button class="saves-load" data-i="${i}">Load</button>` +
+        `<button class="saves-del" data-i="${i}" aria-label="Delete save">✕</button></div>`;
+      row.querySelector(".saves-title").textContent = s.name || `Save ${i + 1}`;
+      listEl.appendChild(row);
+    });
+    listEl.querySelectorAll(".saves-load").forEach(b => b.addEventListener("click", () => loadSlot(+b.dataset.i)));
+    listEl.querySelectorAll(".saves-del").forEach(b => b.addEventListener("click", () => delSlot(+b.dataset.i)));
+  };
+
+  const saveCurrent = () => {
+    const slots = readSlots();
+    if (slots.length >= SAVES_MAX) { toast(`Save limit reached (${SAVES_MAX}). Delete one first.`); return; }
+    const grid = sandbox.serialize();
+    const cr = creatures.serialize();
+    const nm = (nameInput?.value || "").trim() || `Save ${slots.length + 1}`;
+    slots.push({ name: nm, ts: Date.now(), px: sandbox.countFilled(), cr: cr.length, grid, creatures: cr });
+    writeSlots(slots);
+    if (nameInput) nameInput.value = "";
+    audio.sfx("click");
+    toast(`Saved “${nm}”`);
+    render();
+  };
+
+  const loadSlot = (i) => {
+    const slots = readSlots();
+    const s = slots[i];
+    if (!s) return;
+    sandbox.deserialize(s.grid);
+    creatures.deserialize(s.creatures || []);
+    if (typeof resetClimateUI === "function") setClimateTemp(sandbox.ambient ?? 20);
+    audio.sfx("click");
+    toast(`Loaded “${s.name}”`);
+    panel.classList.remove("open");
+    toggle.classList.remove("active");
+  };
+
+  const delSlot = (i) => {
+    const slots = readSlots();
+    if (!slots[i]) return;
+    const nm = slots[i].name;
+    slots.splice(i, 1);
+    writeSlots(slots);
+    audio.sfx("click");
+    toast(`Deleted “${nm}”`);
+    render();
+  };
+
+  toggle.addEventListener("click", () => {
+    const open = panel.classList.toggle("open");
+    toggle.classList.toggle("active", open);
+    if (open) { closeOtherSbPanels("saves"); audio.sfx("click"); render(); }
+  });
+  $("#sb-saves-close")?.addEventListener("click", () => { panel.classList.remove("open"); toggle.classList.remove("active"); });
+  saveBtn?.addEventListener("click", saveCurrent);
+  nameInput?.addEventListener("keydown", (e) => { if (e.key === "Enter") saveCurrent(); });
+
+  render();
 }
 
 /* ---------------------------------------------------------------------------
@@ -1312,6 +1658,24 @@ function setupClimate() {
   const stateEl = $("#clm-state");
   if (!panel || !toggle || !slider) return;
 
+  // PIECEWISE SLIDER SCALE — the old slider was linear over -60..1600, so the
+  // useful everyday range (around freezing/boiling) was crammed into a sliver.
+  // Now the slider track is a normalised 0..1000 and maps in two segments:
+  //   0..600   -> -60 .. 200 \u00b0C  (FINE: ~0.43\u00b0/unit, where most phase changes live)
+  //   600..1000-> 200 .. 1600 \u00b0C (COARSE: ~3.5\u00b0/unit, for melting/inferno)
+  // This gives precise control near room temperature and still reaches molten.
+  const KNEE = 600, KNEE_T = 200, LO = -60, HI = 1600;
+  const sliderToTemp = (s) => {
+    s = Math.max(0, Math.min(1000, s));
+    if (s <= KNEE) return LO + (s / KNEE) * (KNEE_T - LO);
+    return KNEE_T + ((s - KNEE) / (1000 - KNEE)) * (HI - KNEE_T);
+  };
+  const tempToSlider = (t) => {
+    t = Math.max(LO, Math.min(HI, t));
+    if (t <= KNEE_T) return ((t - LO) / (KNEE_T - LO)) * KNEE;
+    return KNEE + ((t - KNEE_T) / (HI - KNEE_T)) * (1000 - KNEE);
+  };
+
   // Describe the current climate in plain language + a colour cue.
   const describe = (t) => {
     if (t <= -20) return { label: "Deep freeze", cls: "cold" };
@@ -1324,23 +1688,29 @@ function setupClimate() {
     return { label: "Molten", cls: "hot" };
   };
 
+  // apply(t) sets ambient to temperature `t` and syncs the slider/labels.
   const apply = (t, { sfx = false } = {}) => {
-    const v = Math.max(-60, Math.min(1600, Math.round(t)));
+    const v = Math.max(LO, Math.min(HI, Math.round(t)));
     sandbox.setAmbient(v);
-    slider.value = String(v);
+    slider.value = String(Math.round(tempToSlider(v)));
     valEl.textContent = `${v}\u00B0C`;
     const d = describe(v);
     stateEl.textContent = d.label;
     panel.dataset.clm = d.cls;
-    // tint the toolbar button when the regulator is actively on
     toggle.classList.toggle("active", d.cls !== "off");
-    // fill the slider track up to the thumb for a nice gradient read
-    const pct = ((v - (-60)) / (1600 - (-60))) * 100;
+    // fill the slider track up to the thumb (uses the normalised position)
+    const pct = (tempToSlider(v) / 1000) * 100;
     slider.style.setProperty("--clm-pct", pct.toFixed(1) + "%");
     if (sfx) {
       if (v <= 0) audio.sfx("freeze");
       else if (v >= 300) audio.sfx("sizzle");
       else audio.sfx("click");
+    }
+    // keep the Sim panel's air-temp control in sync if it exists
+    const airSync = $("#sim-air"), airSyncVal = $("#sim-air-val");
+    if (airSync && document.activeElement !== airSync) {
+      airSync.value = String(Math.max(-60, Math.min(400, v)));
+      if (airSyncVal) airSyncVal.textContent = `${v}\u00B0C`;
     }
   };
 
@@ -1351,9 +1721,9 @@ function setupClimate() {
   });
   $("#sb-climate-close")?.addEventListener("click", () => panel.classList.remove("open"));
 
-  // live drag (no SFX spam) + a single tick when released
-  slider.addEventListener("input", () => apply(+slider.value));
-  slider.addEventListener("change", () => apply(+slider.value, { sfx: true }));
+  // slider now carries a normalised value -> convert through the piecewise map
+  slider.addEventListener("input", () => apply(sliderToTemp(+slider.value)));
+  slider.addEventListener("change", () => apply(sliderToTemp(+slider.value), { sfx: true }));
 
   panel.querySelectorAll(".clm-preset").forEach(btn => {
     btn.addEventListener("click", () => apply(+btn.dataset.temp, { sfx: true }));
@@ -1361,9 +1731,14 @@ function setupClimate() {
 
   // initialise readout to the engine's current ambient
   apply(sandbox.ambient ?? 20);
-  // expose so Clear / scene load can reset the climate UI in sync
+  // expose so Clear / scene load / Sim panel can reset or drive the climate UI
   resetClimateUI = () => apply(20);
+  setClimateTemp = (t, opts) => apply(t, opts);
 }
+
+// Set the ambient climate temperature from elsewhere (e.g. the Sim panel's
+// air-temp slider). Wired by setupClimate.
+let setClimateTemp = () => {};
 
 // Reset the climate regulator back to neutral (set by setupClimate).
 let resetClimateUI = () => {};
@@ -1374,9 +1749,15 @@ function closeOtherSbPanels(keep) {
   if (keep !== "scenes") $("#sb-scenes")?.classList.remove("open");
   if (keep !== "climate") $("#sb-climate")?.classList.remove("open");
   if (keep !== "life") $("#sb-life")?.classList.remove("open");
+  if (keep !== "sim") $("#sb-sim")?.classList.remove("open");
+  if (keep !== "weather") $("#sb-weather")?.classList.remove("open");
+  if (keep !== "saves") $("#sb-saves")?.classList.remove("open");
   if (keep !== "life") $("#sb-life-toggle")?.classList.remove("active");
   if (keep !== "scenes") $("#sb-scenes-toggle")?.classList.remove("active");
   if (keep !== "climate") $("#sb-climate-toggle")?.classList.remove("active");
+  if (keep !== "sim") $("#sb-sim-toggle")?.classList.remove("active");
+  if (keep !== "weather") $("#sb-weather-toggle")?.classList.remove("active");
+  if (keep !== "saves") $("#sb-saves-toggle")?.classList.remove("active");
 }
 
 /* ---------------------------------------------------------------------------

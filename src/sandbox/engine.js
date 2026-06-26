@@ -50,6 +50,20 @@ export class Sandbox {
     // (0 = engine ignores the regulator and uses gentle settle-to-20 behavior).
     this.ambient = 20;
     this.enviroForce = 0;
+    // Configurable temperature limits ("Abs Zero" / max) the regulator clamps to.
+    // Exposed in the Sim panel so the player can widen or narrow the climate range.
+    this.tempMin = -60;
+    this.tempMax = 1600;
+    // Simulation speed multiplier (steps run per frame). 1 = normal; the render
+    // loop in main.js reads this. Density/gravity multiplier affects fall speed.
+    this.speed = 1;
+    // --- weather: a temporary, self-expiring environmental event (snow/storm/
+    // tornado/lightning). Set via startWeather(); stepWeather() advances it and
+    // clears it when ttl runs out. weatherFX holds funnel/bolt overlay particles.
+    this.weather = null;        // {kind, ttl, max, ...}
+    this.weatherFX = [];        // overlay particles: rain/snow/debris/bolts
+    this.prevAmbient = null;    // ambient to restore when a weather event ends
+    this.showAxes = true;       // draw faint x/y ruler ticks + grid coords overlay
     // --- visual FX particle layer (explosions etc.) ---
     // Sub-cell float particles drawn on top of the grid. Pure eye-candy: they do
     // not affect the simulation. Each: {x,y,vx,vy in CELL units, r radius px,
@@ -63,7 +77,7 @@ export class Sandbox {
   // than the neutral 20°C turns the regulator ON (enviroForce ramps up); back at
   // 20 it eases off so the sandbox returns to its natural light cooling.
   setAmbient(t) {
-    this.ambient = Math.max(-60, Math.min(1600, Number(t) || 0));
+    this.ambient = Math.max(this.tempMin, Math.min(this.tempMax, Number(t) || 0));
     // off when neutral, otherwise stronger the further from room temperature so
     // the regulator feels responsive (water freezes / things heat in a second or two)
     const dist = Math.abs(this.ambient - 20);
@@ -198,6 +212,128 @@ export class Sandbox {
   clearAll() {
     this.grid.fill(0); this.temp.fill(this.ambient); this.life.fill(0); this.pressure.fill(0);
     this.events.length = 0; this.eventSeen.clear();
+    this.fx.length = 0; this.weather = null;
+  }
+
+  // Drop a solid/powder residue (e.g. salt from evaporating saltwater) into the
+  // nearest empty cell at/below (x,y) so it settles rather than disappearing.
+  _dropResidue(x, y, residueId) {
+    for (const [dx, dy] of [[0, 0], [0, 1], [-1, 0], [1, 0], [0, -1]]) {
+      const nx = x + dx, ny = y + dy;
+      if (this.inBounds(nx, ny) && this.grid[this.idx(nx, ny)] === 0) {
+        this.set(nx, ny, residueId); this.produced(residueId); return;
+      }
+    }
+  }
+
+  // Count non-empty cells (for the coordinate/px readout).
+  countFilled() {
+    let n = 0;
+    for (let i = 0; i < this.grid.length; i++) if (this.grid[i]) n++;
+    return n;
+  }
+
+  // ---- shape stamping (Box / Circle containers) ----
+  // Honour the same overpaint rules as paint() so shapes layer naturally and
+  // never bulldoze existing solids (lets you draw a stone box AROUND water).
+  _stampCell(x, y, id) {
+    if (!this.inBounds(x, y)) return;
+    if (id === 0 || id === "eraser") { this.clearCell(x, y); return; }
+    const occ = this.grid[this.idx(x, y)];
+    if (occ === 0) { this.set(x, y, id); return; }
+    if (this.state(id) === "solid" && this.state(occ) === "solid") return;
+    if (this.state(id) !== "gas") this.set(x, y, id);
+  }
+  // Stamp a rectangle in CELL coordinates. fill=false => only the perimeter (a
+  // hollow container). thickness controls the wall width for outlined shapes.
+  stampRect(cx0, cy0, cx1, cy1, id, { fill = true, thickness = 1 } = {}) {
+    const x0 = Math.min(cx0, cx1), x1 = Math.max(cx0, cx1);
+    const y0 = Math.min(cy0, cy1), y1 = Math.max(cy0, cy1);
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
+        if (!fill) {
+          const edge = (x - x0 < thickness) || (x1 - x < thickness) ||
+                       (y - y0 < thickness) || (y1 - y < thickness);
+          if (!edge) continue;
+        }
+        this._stampCell(x, y, id);
+      }
+    }
+  }
+  // Stamp an ellipse/circle bounded by the drag rect (cell coords). fill=false
+  // => a ring (hollow round container).
+  stampEllipse(cx0, cy0, cx1, cy1, id, { fill = true, thickness = 1 } = {}) {
+    const x0 = Math.min(cx0, cx1), x1 = Math.max(cx0, cx1);
+    const y0 = Math.min(cy0, cy1), y1 = Math.max(cy0, cy1);
+    const rx = Math.max(0.5, (x1 - x0) / 2), ry = Math.max(0.5, (y1 - y0) / 2);
+    const mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
+    const tin = Math.max(0, 1 - thickness / Math.max(rx, ry));
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
+        const nx = (x - mx) / rx, ny = (y - my) / ry;
+        const d = nx * nx + ny * ny;
+        if (d > 1.02) continue;                 // outside the ellipse
+        if (!fill && d < tin * tin) continue;   // inside the ring's hollow
+        this._stampCell(x, y, id);
+      }
+    }
+  }
+
+  // px helpers for shape tools
+  cellOfPixel(px, py) {
+    return { cx: Math.floor(px / this.cell), cy: Math.floor(py / this.cell) };
+  }
+
+  // ---- serialize / deserialize (save slots) ----
+  // Compact RLE of the grid so saved states stay small in localStorage.
+  serialize() {
+    const g = this.grid, n = g.length;
+    const rle = [];
+    let i = 0;
+    while (i < n) {
+      const v = g[i]; let j = i + 1;
+      while (j < n && g[j] === v) j++;
+      rle.push([v || 0, j - i]);
+      i = j;
+    }
+    return { v: 1, W: this.W, H: this.H, cell: this.cell, ambient: this.ambient,
+      tempMin: this.tempMin, tempMax: this.tempMax, rle };
+  }
+  // Restore a serialized grid. Resizes the cell grid to match the saved cell
+  // size & dimensions, then expands the RLE. Temps reset to ambient (fast & small).
+  deserialize(obj) {
+    if (!obj || !obj.rle) return false;
+    if (obj.cell && obj.cell !== this.cell) { this.cell = obj.cell; }
+    // force a grid sized to the SAVED dimensions and keep the canvas in sync so
+    // the restored scene fills the same area it was saved at.
+    const W = obj.W, H = obj.H, N = W * H;
+    this.W = W; this.H = H;
+    this.canvas.width = W * this.cell;
+    this.canvas.height = H * this.cell;
+    this.grid = new Array(N).fill(0);
+    this.temp = new Float32Array(N).fill(obj.ambient ?? 20);
+    this.life = new Int16Array(N).fill(0);
+    this.tint = new Float32Array(N);
+    this.pressure = new Float32Array(N);
+    let i = 0;
+    for (const [v, run] of obj.rle) {
+      for (let k = 0; k < run && i < N; k++, i++) {
+        this.grid[i] = v || 0;
+        if (v) {
+          const p = this.phys(v);
+          this.temp[i] = (p && p.temp != null) ? p.temp : (obj.ambient ?? 20);
+          this.life[i] = (p && p.lifespan) ? p.lifespan : 0;
+          this.tint[i] = (Math.random() * 2 - 1) * 0.18;
+        }
+      }
+    }
+    if (obj.tempMin != null) this.tempMin = obj.tempMin;
+    if (obj.tempMax != null) this.tempMax = obj.tempMax;
+    this.setAmbient(obj.ambient ?? 20);
+    this.fx.length = 0; this.weather = null;
+    this.events.length = 0; this.eventSeen.clear();
+    this.producedSeen.clear();
+    return true;
   }
 
   // Return the element id occupying the cell under a pixel coord (or 0 if empty).
@@ -233,7 +369,40 @@ export class Sandbox {
       temp: Math.round(this.tempAtPixel(px, py)),
       pressure: +(this.pressureAtPixel(px, py)).toFixed(2),
       phase: id ? this.state(id) : "empty",
+      nextChange: this.nextChangeFor(id, this.tempAtPixel(px, py)),
     };
+  }
+
+  // Describe the next phase transition for `id` at the given temperature, e.g.
+  // "melts >1538\u00b0C" or "freezes <0\u00b0C". Returns "" when nothing applies.
+  // Looks at the element's phys thresholds and picks the nearest one in the
+  // direction temperature would have to move. Used by the per-pixel hover HUD.
+  nextChangeFor(id, temp) {
+    if (!id) return "";
+    const p = this.phys(id);
+    if (!p) return "";
+    const opts = [];
+    if (p.meltAt != null) opts.push({ t: p.meltAt, up: true, verb: "melts", to: p.meltTo });
+    if (p.boilAt != null) opts.push({ t: p.boilAt, up: true, verb: "boils", to: p.boilTo });
+    if (p.freezeAt != null) opts.push({ t: p.freezeAt, up: false, verb: "freezes", to: p.freezeTo });
+    if (p.condenseAt != null) opts.push({ t: p.condenseAt, up: false, verb: "condenses", to: p.condenseTo });
+    if (!opts.length) return "";
+    // pick the nearest threshold the cell hasn't passed yet (smallest |delta|
+    // in the correct direction); fall back to the globally nearest.
+    let best = null, bestD = Infinity;
+    for (const o of opts) {
+      const pending = o.up ? (temp < o.t) : (temp > o.t);
+      if (!pending) continue;
+      const d = Math.abs(o.t - temp);
+      if (d < bestD) { bestD = d; best = o; }
+    }
+    if (!best) {
+      for (const o of opts) { const d = Math.abs(o.t - temp); if (d < bestD) { bestD = d; best = o; } }
+    }
+    if (!best) return "";
+    const arrow = best.up ? ">" : "<";
+    const toName = best.to ? " \u2192 " + this.nameOf(best.to) : "";
+    return `${best.verb} ${arrow}${Math.round(best.t)}\u00b0C${toName}`;
   }
 
   // ---- main step ----
@@ -253,19 +422,31 @@ export class Sandbox {
     }
     this.diffuseHeat();
     this.updatePressure();
+    this.stepWeather();
     this.stepFX();
   }
 
-  // Light enclosed-gas pressure model (cheap, runs every 3rd frame).
-  // A gas/empty cell gains pressure when blocked above by solid/liquid/powder
-  // (trapped, can't rise) and loses it when open above. Pressure also relaxes
-  // toward ambient so it reads naturally. Logs a "high pressure" event once
-  // a cell crosses a threshold, so the event log surfaces sealed gas pockets.
+  // Sealed-cavity pressure model (Sandboxels-style, cheap, every 3rd frame).
+  //
+  // Each gas/empty cell builds pressure from two coupled sources:
+  //   1) CONFINEMENT  \u2014 non-gas neighbours on each side act as walls. The more
+  //      sealed a pocket is, the higher the baseline pressure (trapped gas).
+  //   2) HEAT (PV=nRT, fun-approximation) \u2014 hot trapped gas pushes harder. A
+  //      cell sitting next to magma/lava or simply very hot ramps pressure up
+  //      proportional to (T-20). This makes a sealed room with magma inside
+  //      pressurise and heat its surroundings.
+  //
+  // Consequences when pressure is high enough:
+  //   \u2022 brittle/weak walls CRACK and vent (so bombs-in-a-box blow out),
+  //   \u2022 adjacent liquids/powders get SHOVED away from the high-pressure cell,
+  //   \u2022 trapped hot gas bleeds a little heat into the walls (room warms up).
   updatePressure() {
     if (!this.pressureEnabled) return;
     if ((this.frame % 3) !== 0) return;
-    const { W, H, grid, pressure } = this;
+    const { W, H, grid, pressure, temp } = this;
     let peak = 0, peakX = -1, peakY = -1;
+    const vents = []; // {x,y} brittle walls to crack this pass
+    const shoves = []; // {x,y,dir} liquid/powder pushes
     for (let y = 0; y < H; y++) {
       for (let x = 0; x < W; x++) {
         const i = this.idx(x, y);
@@ -273,29 +454,100 @@ export class Sandbox {
         const st = id ? this.state(id) : "empty";
         const isGasLike = st === "gas" || st === "empty";
         if (!isGasLike) { pressure[i] = 0; continue; }
-        // is this gas trapped? check the cell directly above
-        let trapped = 0;
-        if (y > 0) {
-          const aid = grid[this.idx(x, y - 1)];
-          const ast = aid ? this.state(aid) : "empty";
-          if (ast === "solid" || ast === "liquid" || ast === "powder") trapped++;
-        } else trapped++; // top wall counts as a lid
-        // sealed sides add a little
-        const lid = (x === 0) || (grid[this.idx(x - 1, y)] && this.state(grid[this.idx(x - 1, y)]) !== "gas" && this.state(grid[this.idx(x - 1, y)]) !== "empty");
-        const rid = (x === W - 1) || (grid[this.idx(x + 1, y)] && this.state(grid[this.idx(x + 1, y)]) !== "gas" && this.state(grid[this.idx(x + 1, y)]) !== "empty");
-        if (lid && rid) trapped += 0.5;
+        // --- confinement: count sealing (non-gas) neighbours on 4 sides ---
+        let seals = 0;
+        const up = (y === 0) || this._isWallCell(x, y - 1);
+        const dn = (y === H - 1) || this._isWallCell(x, y + 1);
+        const lf = (x === 0) || this._isWallCell(x - 1, y);
+        const rt = (x === W - 1) || this._isWallCell(x + 1, y);
+        if (up) seals++; if (dn) seals++; if (lf) seals++; if (rt) seals++;
+        // a lid above (can't rise out) matters most
+        let trapped = up ? 1 : 0;
+        if (seals >= 3) trapped += (seals - 2) * 0.6; // nearly-sealed pocket
         // real gas (not just air) under a lid builds more pressure
-        const gasMass = st === "gas" ? 1 : 0.35;
-        const target = trapped > 0 ? trapped * gasMass * 1.4 : 0;
+        const gasMass = st === "gas" ? 1 : 0.3;
+        let target = trapped > 0 ? trapped * gasMass * 1.4 : 0;
+        // --- heat coupling (PV=nRT fun-approx): hot trapped gas pushes harder ---
+        const tC = temp[i];
+        if (trapped > 0 && tC > 40) {
+          target += Math.min(4, (tC - 20) / 180) * (1 + seals * 0.25);
+        }
         // ease toward target so it's smooth and mobile-cheap
         pressure[i] += (target - pressure[i]) * 0.25;
-        if (pressure[i] > peak) { peak = pressure[i]; peakX = x; peakY = y; }
+        const pr = pressure[i];
+        if (pr > peak) { peak = pr; peakX = x; peakY = y; }
+        // --- consequences of high local pressure ---
+        if (pr >= 2.2) {
+          // 1) crack a brittle wall neighbour and vent (look for the weakest)
+          if ((this.frame % 6) === 0) {
+            const dirs = [[0,-1],[0,1],[-1,0],[1,0]];
+            for (const [dx,dy] of dirs) {
+              const nx = x+dx, ny = y+dy;
+              if (!this.inBounds(nx,ny)) continue;
+              if (this._isBrittleWall(grid[this.idx(nx,ny)])) { vents.push({x:nx,y:ny}); break; }
+            }
+          }
+          // 2) shove an adjacent liquid/powder away from the pressure source
+          if ((this.frame % 6) === 3) {
+            const dirs = [[-1,0],[1,0],[0,-1],[0,1]];
+            for (const [dx,dy] of dirs) {
+              const nx = x+dx, ny = y+dy;
+              if (!this.inBounds(nx,ny)) continue;
+              const ns = this.state(grid[this.idx(nx,ny)]);
+              if (ns === "liquid" || ns === "powder") { shoves.push({x:nx,y:ny,dx,dy}); break; }
+            }
+          }
+          // 3) hot trapped gas bleeds heat into surrounding walls (room warms)
+          if (tC > 60) {
+            const dirs = [[0,-1],[0,1],[-1,0],[1,0]];
+            for (const [dx,dy] of dirs) {
+              const nx = x+dx, ny = y+dy;
+              if (!this.inBounds(nx,ny)) continue;
+              const j = this.idx(nx,ny);
+              if (this._isWallCell(nx,ny)) temp[j] += (tC - temp[j]) * 0.04;
+            }
+          }
+        }
       }
     }
-    if (peak >= 1.6 && peakX >= 0) {
+    // apply cracks: brittle wall -> empty + a puff of smoke + a pressure release
+    for (const v of vents) {
+      const i = this.idx(v.x, v.y);
+      this.grid[i] = 0; this.pressure[i] = 0;
+      if (Math.random() < 0.5 && this.has("smoke")) { this.set(v.x, v.y, "smoke"); }
+      this.logEvent("pressure", "Pressure cracked a wall and vented", "pressure-crack");
+    }
+    // apply shoves: move the liquid/powder one cell further from the source if open
+    for (const s of shoves) {
+      const tx = s.x + s.dx, ty = s.y + s.dy;
+      if (this.inBounds(tx, ty) && this.grid[this.idx(tx, ty)] === 0) {
+        this.swap(s.x, s.y, tx, ty);
+      }
+    }
+    if (peak >= 2.0 && peakX >= 0) {
       const id = grid[this.idx(peakX, peakY)];
       this.logEvent("pressure", `High pressure pocket (${this.nameOf(id)}) building up`, "pressure-high");
     }
+  }
+
+  // A "wall" for pressure purposes = solid / liquid / powder (anything a gas
+  // can't freely pass through). Out-of-bounds is handled by callers.
+  _isWallCell(x, y) {
+    const id = this.grid[this.idx(x, y)];
+    if (!id) return false;
+    const st = this.state(id);
+    return st === "solid" || st === "liquid" || st === "powder";
+  }
+
+  // Brittle walls that high pressure can crack open. Powders are loosely packed,
+  // and glass/ice/sand-like solids are brittle. Metals & sturdy stone resist.
+  _isBrittleWall(id) {
+    if (!id) return false;
+    const p = this.phys(id);
+    if (!p) return false;
+    if (p.state === "powder") return true;
+    const brittle = { glass: 1, ice: 1, obsidian: 1, ceramic: 1, brick: 1 };
+    return !!brittle[id];
   }
 
   swap(x1, y1, x2, y2) {
@@ -328,10 +580,24 @@ export class Sandbox {
     // reactions first (may consume the cell)
     if (this.react(x, y, id, p)) return;
 
+    // GRAVITY multiplier (Sim panel): <1 makes falling matter drift/float by
+    // skipping some ticks; >1 gives an extra settling attempt so it packs faster.
+    // Gas is inverted — stronger gravity makes it rise more sluggishly.
+    const g = this.gravity;
     switch (beh) {
-      case "powder": this.movePowder(x, y, id); break;
-      case "water": case "lava": case "acid": this.moveLiquid(x, y, id, beh); break;
-      case "gas": case "smoke": this.moveGas(x, y, id, beh); break;
+      case "powder":
+        if (g < 1 && Math.random() > g) break;
+        this.movePowder(x, y, id);
+        if (g > 1 && Math.random() < (g - 1)) this.movePowder(x, y, id);
+        break;
+      case "water": case "lava": case "acid":
+        if (g < 1 && Math.random() > g) break;
+        this.moveLiquid(x, y, id, beh);
+        if (g > 1 && Math.random() < (g - 1)) this.moveLiquid(x, y, id, beh);
+        break;
+      case "gas": case "smoke":
+        if (g > 1 && Math.random() < (g - 1) * 0.5) break;
+        this.moveGas(x, y, id, beh); break;
       case "fire": this.moveFire(x, y, id, p); break;
       case "spark": this.moveSpark(x, y, id, p); break;
       case "explosion": this.explode(x, y, id, p); break;
@@ -524,6 +790,232 @@ export class Sandbox {
 
   // Advance all FX particles one frame (called from step()). Applies velocity,
   // gravity/drag per kind, grows/shrinks, and culls dead ones.
+  // ====================================================================
+  //  WEATHER  — temporary, self-expiring environmental events.
+  //  Kinds: "snow", "storm", "tornado", "lightning". Each is started with a
+  //  time-to-live (ttl, in frames) and advanced once per step. When ttl hits 0
+  //  the event ends and ambient is restored to whatever it was before.
+  //  Visual overlay particles live in this.weatherFX (rain drops, snow flakes,
+  //  funnel debris, lightning bolts) and are drawn in renderWeather().
+  // ====================================================================
+  startWeather(kind, frames) {
+    if (this.prevAmbient == null) this.prevAmbient = this.ambient;
+    const max = frames || 600;
+    this.weather = { kind, ttl: max, max, t: 0, tornadoX: this.W * 0.3, tornadoDir: 1, flashUntil: 0 };
+    this.weatherFX = this.weatherFX || [];
+    if (kind === "snow") {
+      // cool the world while it snows
+      this.setAmbient(Math.min(this.ambient, -8));
+    } else if (kind === "storm") {
+      this.setAmbient(Math.min(this.ambient, 12));
+    }
+    this.logEvent("weather", `${kind[0].toUpperCase() + kind.slice(1)} began`, "weather-" + kind);
+  }
+
+  stopWeather() {
+    if (!this.weather) return;
+    this.logEvent("weather", `${this.weather.kind} cleared`, "weather-stop-" + this.weather.kind);
+    this.weather = null;
+    if (this.prevAmbient != null) { this.setAmbient(this.prevAmbient); this.prevAmbient = null; }
+    if (this.weatherFX) this.weatherFX.length = 0;
+  }
+
+  weatherActive() { return !!this.weather; }
+
+  // advance the active weather event by one frame (called from step())
+  stepWeather() {
+    const w = this.weather;
+    if (!w) return;
+    w.ttl--; w.t++;
+    this.weatherFX = this.weatherFX || [];
+    const { W, H } = this;
+    if (w.kind === "snow") this._stepSnow(w);
+    else if (w.kind === "storm") this._stepStorm(w);
+    else if (w.kind === "tornado") this._stepTornado(w);
+    else if (w.kind === "lightning") this._stepLightning(w);
+    // advance overlay particles (rain/snow/debris)
+    const fx = this.weatherFX; let n = 0;
+    for (let i = 0; i < fx.length; i++) {
+      const p = fx[i];
+      p.life--; if (p.life <= 0) continue;
+      p.x += p.vx; p.y += p.vy;
+      if (p.kind === "flake") { p.x += Math.sin((w.t + i) * 0.08) * 0.05; }
+      fx[n++] = p;
+    }
+    fx.length = n;
+    if (w.ttl <= 0) this.stopWeather();
+  }
+
+  _stepSnow(w) {
+    const { W, H } = this;
+    // spawn falling snow flakes from the top
+    if ((this.frame & 1) === 0) {
+      for (let s = 0; s < 3; s++) {
+        const cx = Math.random() * W;
+        this.weatherFX.push({ kind: "flake", x: cx, y: -1, vx: (Math.random()-0.5)*0.1, vy: 0.18 + Math.random()*0.12, r: 0.6 + Math.random()*0.6, life: H * 6, max: H * 6 });
+      }
+    }
+    // occasionally deposit real snow powder at the surface for accumulation
+    if (this.has("snow") && (this.frame % 4) === 0) {
+      const cx = (Math.random() * W) | 0;
+      // find first solid/liquid from top, place snow above it
+      for (let y = 1; y < H; y++) {
+        const st = this.state(this.grid[this.idx(cx, y)]);
+        if (st === "solid" || st === "liquid" || st === "powder") {
+          if (this.grid[this.idx(cx, y - 1)] === 0) { this.set(cx, y - 1, "snow"); }
+          break;
+        }
+        if (y === H - 1 && this.grid[this.idx(cx, y)] === 0) this.set(cx, y, "snow");
+      }
+    }
+  }
+
+  _stepStorm(w) {
+    const { W, H } = this;
+    // wind-blown rain
+    const wind = Math.sin(w.t * 0.02) * 0.12;
+    for (let s = 0; s < 5; s++) {
+      const cx = Math.random() * W;
+      this.weatherFX.push({ kind: "rain", x: cx, y: -1, vx: wind + 0.05, vy: 0.9 + Math.random()*0.5, r: 1, life: H * 2, max: H * 2 });
+    }
+    // wet the surface a touch: place water occasionally
+    if (this.has("water") && (this.frame % 10) === 0) {
+      const cx = (Math.random() * W) | 0;
+      if (this.grid[this.idx(cx, 1)] === 0) this.set(cx, 0, "water");
+    }
+    // periodic lightning strikes during a storm
+    if (w.t > 30 && Math.random() < 0.025) this._strike(w);
+  }
+
+  _stepTornado(w) {
+    const { W, H } = this;
+    // move the funnel back and forth across the canvas
+    w.tornadoX += w.tornadoDir * 0.25;
+    if (w.tornadoX > W * 0.85) w.tornadoDir = -1;
+    if (w.tornadoX < W * 0.15) w.tornadoDir = 1;
+    const fx = (w.tornadoX) | 0;
+    const radius = Math.max(3, (W * 0.06) | 0);
+    // lift loose powders/liquids near the funnel into a swirling column
+    for (let y = H - 1; y >= 1; y--) {
+      for (let dx = -radius; dx <= radius; dx++) {
+        const x = fx + dx;
+        if (x < 0 || x >= W) continue;
+        const id = this.grid[this.idx(x, y)];
+        if (!id) continue;
+        const st = this.state(id);
+        if (st === "powder" || st === "liquid") {
+          // pull toward the funnel centre and upward with some probability
+          if (Math.random() < 0.35) {
+            const towardX = x + (dx > 0 ? -1 : (dx < 0 ? 1 : (Math.random()<0.5?-1:1)));
+            const upY = y - 1;
+            if (this.inBounds(towardX, upY) && this.grid[this.idx(towardX, upY)] === 0) {
+              this.swap(x, y, towardX, upY);
+            } else if (this.grid[this.idx(x, upY)] === 0) {
+              this.swap(x, y, x, upY);
+            }
+          }
+        }
+      }
+    }
+    // funnel debris overlay particles
+    if ((this.frame & 1) === 0) {
+      const cy = (Math.random() * H) | 0;
+      const swirl = Math.sin(w.t * 0.3 + cy) * radius;
+      this.weatherFX.push({ kind: "debris", x: fx + swirl, y: cy, vx: (Math.random()-0.5)*0.3, vy: -0.3 - Math.random()*0.3, r: 0.8, life: 30, max: 30 });
+    }
+    w.funnelX = fx; w.funnelR = radius;
+  }
+
+  _stepLightning(w) {
+    // a quick series of bolts then it ends naturally via ttl
+    if (w.t === 1 || Math.random() < 0.05) this._strike(w);
+  }
+
+  // fire a single lightning bolt: pick a column, zig-zag from top to first
+  // obstacle, flash the screen, heat/ignite the impact point.
+  _strike(w) {
+    const { W, H } = this;
+    const col = (Math.random() * W) | 0;
+    // find impact row (first non-empty from top, else floor)
+    let impactY = H - 1;
+    for (let y = 0; y < H; y++) { if (this.grid[this.idx(col, y)]) { impactY = y; break; } }
+    // build jagged path
+    const path = []; let x = col;
+    for (let y = 0; y <= impactY; y++) {
+      x += (Math.random() * 3 | 0) - 1; x = Math.max(0, Math.min(W - 1, x));
+      path.push({ x, y });
+    }
+    this.weatherFX.push({ kind: "bolt", path, life: 8, max: 8 });
+    w.flashUntil = this.frame + 6;
+    // impact: heat + chance to ignite flammable, electrify conductive
+    const ix = path.length ? path[path.length - 1].x : col;
+    const i = this.idx(ix, impactY);
+    this.temp[i] = Math.max(this.temp[i], 900);
+    const id = this.grid[i];
+    if (id) {
+      const p = this.phys(id);
+      if (p && p.flammable && this.has("fire")) { this.set(ix, Math.max(0, impactY - 1), "fire"); }
+    }
+    this.spawnExplosionFX(ix, impactY, 2);
+    this.logEvent("weather", "Lightning strike", "weather-strike");
+  }
+
+  // draw the weather overlay: rain streaks, snow flakes, funnel, bolts, flash
+  renderWeather() {
+    const w = this.weather; if (!w) return;
+    const ctx = this.ctx, cell = this.cell;
+    const fx = this.weatherFX || [];
+    ctx.save();
+    // screen flash for lightning
+    if (w.flashUntil && this.frame < w.flashUntil) {
+      const a = (w.flashUntil - this.frame) / 6 * 0.35;
+      ctx.fillStyle = `rgba(220,230,255,${a})`;
+      ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+    }
+    for (let i = 0; i < fx.length; i++) {
+      const p = fx[i];
+      const px = p.x * cell, py = p.y * cell;
+      if (p.kind === "rain") {
+        ctx.strokeStyle = "rgba(150,180,220,0.5)";
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(px - p.vx * cell * 2, py - p.vy * cell * 2); ctx.stroke();
+      } else if (p.kind === "flake") {
+        ctx.fillStyle = "rgba(255,255,255,0.85)";
+        ctx.beginPath(); ctx.arc(px, py, p.r * cell * 0.4, 0, Math.PI * 2); ctx.fill();
+      } else if (p.kind === "debris") {
+        ctx.fillStyle = "rgba(180,170,150,0.6)";
+        ctx.fillRect(px, py, cell * 0.6, cell * 0.6);
+      } else if (p.kind === "bolt") {
+        const t = p.life / p.max;
+        ctx.strokeStyle = `rgba(235,240,255,${t})`;
+        ctx.lineWidth = Math.max(1.5, cell * 0.4 * t);
+        ctx.shadowColor = "rgba(180,200,255,0.9)"; ctx.shadowBlur = cell * 2;
+        ctx.beginPath();
+        for (let k = 0; k < p.path.length; k++) {
+          const pt = p.path[k];
+          const lx = pt.x * cell + cell / 2, ly = pt.y * cell + cell / 2;
+          if (k === 0) ctx.moveTo(lx, ly); else ctx.lineTo(lx, ly);
+        }
+        ctx.stroke(); ctx.shadowBlur = 0;
+      }
+    }
+    // tornado funnel silhouette
+    if (w.kind === "tornado" && w.funnelX != null) {
+      const cxp = w.funnelX * cell;
+      const grad = ctx.createLinearGradient(cxp, 0, cxp, this.canvas.height);
+      grad.addColorStop(0, "rgba(120,120,130,0.30)");
+      grad.addColorStop(1, "rgba(90,90,100,0.12)");
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      const H = this.canvas.height;
+      const topR = w.funnelR * cell * 1.4, botR = w.funnelR * cell * 0.5;
+      ctx.moveTo(cxp - topR, 0); ctx.lineTo(cxp + topR, 0);
+      ctx.lineTo(cxp + botR + Math.sin(w.t * 0.3) * cell, H);
+      ctx.lineTo(cxp - botR + Math.sin(w.t * 0.3) * cell, H);
+      ctx.closePath(); ctx.fill();
+    }
+    ctx.restore();
+  }
   stepFX() {
     const fx = this.fx;
     if (!fx.length) return;
@@ -649,6 +1141,12 @@ export class Sandbox {
     const condenseAt = (p.boilAt != null ? p.boilAt - 5 : 95);
     if (p.boilTo && t >= boilAt && this.has(p.boilTo)) {
       this.logEvent("phase", `${this.nameOf(id)} boiled into ${this.nameOf(p.boilTo)} at ${Math.round(boilAt)}°C`, "boil|"+id);
+      // Evaporation can leave a non-volatile residue behind (e.g. salt water /
+      // brine boils off as steam but drops solid salt). Spawn the residue in a
+      // nearby empty/loose cell so it accumulates rather than vanishing.
+      if (p.evapResidue && this.has(p.evapResidue) && Math.random() < 0.5) {
+        this._dropResidue(x, y, p.evapResidue);
+      }
       this.set(x, y, p.boilTo); this.produced(p.boilTo); return true;
     }
     if (p.freezeTo && t <= freezeAt && this.has(p.freezeTo)) {
@@ -766,6 +1264,36 @@ export class Sandbox {
       }
     }
     this.renderFX();
+    this.renderWeather();
+    if (this.showAxes) this._drawAxes();
+  }
+
+  // Faint x/y ruler ticks + coordinate labels along the top and left edges,
+  // so the player can read grid positions like in Sandboxels.
+  _drawAxes() {
+    const { ctx, W, H, cell } = this;
+    // spacing in cells: aim for a label roughly every ~60px, rounded to 10s
+    const stepCells = Math.max(10, Math.round(60 / cell / 10) * 10);
+    ctx.save();
+    ctx.font = "9px ui-monospace, Menlo, Consolas, monospace";
+    ctx.textBaseline = "top";
+    ctx.fillStyle = "rgba(255,255,255,0.30)";
+    ctx.strokeStyle = "rgba(255,255,255,0.12)";
+    ctx.lineWidth = 1;
+    // top ruler (x)
+    for (let x = 0; x <= W; x += stepCells) {
+      const px = x * cell + 0.5;
+      ctx.beginPath(); ctx.moveTo(px, 0); ctx.lineTo(px, 5); ctx.stroke();
+      if (x > 0) ctx.fillText(String(x), px + 2, 1);
+    }
+    // left ruler (y)
+    ctx.textBaseline = "middle";
+    for (let y = 0; y <= H; y += stepCells) {
+      const py = y * cell + 0.5;
+      ctx.beginPath(); ctx.moveTo(0, py); ctx.lineTo(5, py); ctx.stroke();
+      if (y > 0) ctx.fillText(String(y), 2, py + 6);
+    }
+    ctx.restore();
   }
 
   shade(hex, jitter, temp) {
