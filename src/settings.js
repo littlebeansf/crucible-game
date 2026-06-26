@@ -19,6 +19,8 @@
 const THEME_KEY = "crucible_theme";
 const ACCENT_KEY = "crucible_accent";
 const CREATURE_VIEW_KEY = "crucible_creature_view"; // "pixel" (default) | "emoji"
+const HINTS_KEY = "crucible_hints";   // "on" (default) | "off" — Forge drag hint lines
+const ADMIN_KEY = "crucible_admin";   // "on" | "off" (default) — test mode: all elements
 
 // Apply the chosen creature rendering style to the live creature system, if it
 // exists yet. Safe to call before creatures are created (no-ops); main.js also
@@ -72,7 +74,20 @@ function applyTheme(theme) {
   return t;
 }
 
-export function setupSettings(storage) {
+// Read the persisted Forge-hint-line preference (default ON). main.js reads
+// this each frame while dragging to decide whether to draw connection lines.
+export function hintsEnabled(storage) {
+  return storage.get(HINTS_KEY) !== "off";
+}
+
+// Read the persisted admin/test-mode flag (default OFF).
+export function adminEnabled(storage) {
+  return storage.get(ADMIN_KEY) === "on";
+}
+
+// `hooks` lets main.js react to setting changes without settings.js importing
+// game state directly. Currently: { onHints(on), onAdmin(on) }.
+export function setupSettings(storage, hooks = {}) {
   // --- restore persisted prefs (apply before first paint of panel) ---------
   const savedTheme = storage.get(THEME_KEY) || "dark";
   const savedHue = Number(storage.get(ACCENT_KEY));
@@ -85,6 +100,8 @@ export function setupSettings(storage) {
   let theme = savedTheme === "light" ? "light" : "dark";
   let hue = Number.isFinite(savedHue) ? savedHue : DEFAULT_HUE;
   let creatureView = savedView;
+  let hints = storage.get(HINTS_KEY) !== "off";       // default ON
+  let admin = storage.get(ADMIN_KEY) === "on";        // default OFF
 
   const $ = (s) => document.querySelector(s);
   const panel = $("#settings-panel");
@@ -150,6 +167,42 @@ export function setupSettings(storage) {
     })
   );
 
+  // --- Forge hint-line toggle ----------------------------------------------
+  // A single pill that flips the dotted "what can I combine?" guide lines on/off
+  // while dragging elements in the Forge.
+  const hintToggle = $("#hints-toggle");
+  if (hintToggle) {
+    const syncHints = () => {
+      hintToggle.classList.toggle("is-on", hints);
+      hintToggle.setAttribute("aria-pressed", String(hints));
+      hintToggle.querySelector(".tog-state").textContent = hints ? "On" : "Off";
+    };
+    hintToggle.addEventListener("click", () => {
+      hints = !hints;
+      storage.set(HINTS_KEY, hints ? "on" : "off");
+      syncHints();
+      hooks.onHints?.(hints);
+    });
+    syncHints();
+  }
+
+  // --- Admin / test mode toggle (enable all elements) -----------------------
+  const adminToggle = $("#admin-toggle");
+  if (adminToggle) {
+    const syncAdmin = () => {
+      adminToggle.classList.toggle("is-on", admin);
+      adminToggle.setAttribute("aria-pressed", String(admin));
+      adminToggle.querySelector(".tog-state").textContent = admin ? "On" : "Off";
+    };
+    adminToggle.addEventListener("click", () => {
+      admin = !admin;
+      storage.set(ADMIN_KEY, admin ? "on" : "off");
+      syncAdmin();
+      hooks.onAdmin?.(admin);
+    });
+    syncAdmin();
+  }
+
   // --- accent swatches ------------------------------------------------------
   const swatchWrap = $("#accent-swatches");
   if (swatchWrap) {
@@ -208,8 +261,12 @@ export function setupSettings(storage) {
     setTheme: (t) => { theme = t; applyTheme(t); storage.set(THEME_KEY, t); syncUI(); },
     setHue: (h) => { hue = h; applyAccent(h); storage.set(ACCENT_KEY, String(h)); syncUI(); },
     setCreatureView: (v) => { creatureView = v === "emoji" ? "emoji" : "pixel"; applyCreatureView(creatureView); storage.set(CREATURE_VIEW_KEY, creatureView); syncUI(); },
+    setHints: (on) => { hints = !!on; storage.set(HINTS_KEY, hints ? "on" : "off"); document.querySelector("#hints-toggle")?.classList.toggle("is-on", hints); hooks.onHints?.(hints); },
+    setAdmin: (on) => { admin = !!on; storage.set(ADMIN_KEY, admin ? "on" : "off"); document.querySelector("#admin-toggle")?.classList.toggle("is-on", admin); hooks.onAdmin?.(admin); },
     get theme() { return theme; },
     get hue() { return hue; },
     get creatureView() { return creatureView; },
+    get hints() { return hints; },
+    get admin() { return admin; },
   };
 }

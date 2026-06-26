@@ -20,6 +20,12 @@ export class GameState {
     this.recentlyDiscovered = [];       // ordered ids (newest first)
     this.unlockedAchievements = new Set(); // achievement ids
     this.listeners = new Set();
+    // Admin / test mode: when ON, every element reads as discovered WITHOUT
+    // touching the real save. We keep a snapshot of genuine progress so the
+    // toggle is fully reversible and the player's real discoveries are never
+    // overwritten (respects the save-migration / keep-progress constraint).
+    this.adminAll = false;
+    this._realDiscovered = null;        // Set snapshot taken when admin turns ON
     this.buildRecipeIndex();
     this.load();
   }
@@ -69,14 +75,18 @@ export class GameState {
   }
 
   save() {
+    // In admin mode the in-memory `discovered` set is artificially full; persist
+    // the genuine snapshot instead so the real save is never clobbered.
+    const realDisc = this.adminAll && this._realDiscovered ? [...this._realDiscovered] : [...this.discovered];
+    const realRecent = this.adminAll && this._realRecent ? this._realRecent : this.recentlyDiscovered;
     storage.set(saveKey(), JSON.stringify({
-      discovered: [...this.discovered],
-      recent: this.recentlyDiscovered.slice(0, 200),
+      discovered: realDisc,
+      recent: realRecent.slice(0, 200),
       achievements: [...this.unlockedAchievements],
       ts: Date.now(),
     }));
     // keep the slot manifest's metadata (found count + timestamp) in sync
-    slots.touch(slots.activeId(), this.discovered.size);
+    slots.touch(slots.activeId(), realDisc.length);
   }
 
   reset() {
@@ -98,6 +108,34 @@ export class GameState {
 
   isDiscovered(id) { return this.discovered.has(id); }
   el(id) { return this.elements[id]; }
+
+  // ---- Admin / test mode (enable all elements, reversible) ----
+  // Turning admin mode ON snapshots the genuine save, then marks every element
+  // discovered IN MEMORY ONLY. Turning it OFF restores the snapshot exactly.
+  // The real save on disk is never overwritten while admin mode is active, so a
+  // player's true progress is preserved across reloads and updates.
+  isAdminAll() { return this.adminAll; }
+  setAdminAll(on) {
+    on = !!on;
+    if (on === this.adminAll) return;
+    if (on) {
+      // snapshot genuine progress so it can be restored verbatim
+      this._realDiscovered = new Set(this.discovered);
+      this._realRecent = [...this.recentlyDiscovered];
+      for (const id in this.elements) this.discovered.add(id);
+      this.adminAll = true;
+    } else {
+      // restore the genuine progress captured when admin mode was enabled
+      if (this._realDiscovered) {
+        this.discovered = new Set(this._realDiscovered);
+        this.recentlyDiscovered = this._realRecent ? [...this._realRecent] : [...this.discovered];
+      }
+      this._realDiscovered = null;
+      this._realRecent = null;
+      this.adminAll = false;
+    }
+    this.emit({ type: "reset" });
+  }
 
   // ---- Save import / export (share progress between devices/browsers) ----
   // Serialise the current progress to a portable JSON string.
@@ -159,6 +197,18 @@ export class GameState {
     const k = this.key(a, b);
     const result = this.recipes[k];
     if (!result) return null;
+    // While admin mode is on, everything already reads as discovered. Track the
+    // discovery against the REAL snapshot so genuine progress still advances
+    // (and the result is remembered once admin mode is turned back off).
+    if (this.adminAll && this._realDiscovered) {
+      const realNew = !this._realDiscovered.has(result);
+      if (realNew) {
+        this._realDiscovered.add(result);
+        this._realRecent = [result, ...(this._realRecent || [])];
+        this.emit({ type: "discover", id: result, from: [a, b] });
+      }
+      return { result, isNew: realNew };
+    }
     const isNew = !this.discovered.has(result);
     if (isNew) {
       this.discovered.add(result);
@@ -174,7 +224,17 @@ export class GameState {
   // bookkeeping so it appears in the Forge drawer, catalog and quick-bar.
   // Returns true only when this is a brand-new discovery.
   discoverFromSandbox(id) {
-    if (!id || !this.elements[id] || this.discovered.has(id)) return false;
+    if (!id || !this.elements[id]) return false;
+    // In admin mode, record against the genuine snapshot (everything already
+    // reads as discovered) so real progress still advances under the hood.
+    if (this.adminAll && this._realDiscovered) {
+      if (this._realDiscovered.has(id)) return false;
+      this._realDiscovered.add(id);
+      this._realRecent = [id, ...(this._realRecent || [])];
+      this.emit({ type: "discover", id, from: "sandbox" });
+      return true;
+    }
+    if (this.discovered.has(id)) return false;
     this.discovered.add(id);
     this.recentlyDiscovered.unshift(id);
     this.save();

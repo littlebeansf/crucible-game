@@ -225,11 +225,16 @@
       <div id="catalog-view" class="view hidden">
         <div class="board-tools">
           <input id="cat-search" type="search" class="cat-search" placeholder="Search discovered…" autocomplete="off" />
+          <div class="cat-viewtoggle" role="tablist" aria-label="Catalog view">
+            <button id="cat-view-grid" class="cat-vt-btn active" data-view="grid" role="tab" aria-selected="true" title="Grid view">▦ Grid</button>
+            <button id="cat-view-map" class="cat-vt-btn" data-view="map" role="tab" aria-selected="false" title="Combination map">⌗ Map</button>
+          </div>
           <span class="cat-overall">Collection <b id="cat-overall-pct">0%</b> · <span id="cat-overall-found">0</span>/<span id="cat-overall-total">0</span></span>
         </div>
         <div id="catalog-body" class="catalog-body">
           <aside id="cat-rail" class="cat-rail"></aside>
           <div id="cat-detail" class="cat-detail"></div>
+          <div id="cat-map" class="cat-map hidden"></div>
         </div>
       </div>
     </section>
@@ -294,6 +299,7 @@
       <button class="set-tab" role="tab" data-tab="appearance" aria-selected="false"><span class="st-ic">🎨</span> Look</button>
       <button class="set-tab" role="tab" data-tab="sound" aria-selected="false"><span class="st-ic">🔊</span> Sound</button>
       <button class="set-tab" role="tab" data-tab="data" aria-selected="false"><span class="st-ic">🗂️</span> Data</button>
+      <button class="set-tab" role="tab" data-tab="advanced" aria-selected="false"><span class="st-ic">🛠️</span> Advanced</button>
     </div>
 
     <div class="set-panes">
@@ -325,6 +331,15 @@
             <button class="theme-opt" data-creature-view="emoji"><span class="to-ic">🐾</span> Emoji</button>
           </div>
           <div class="set-hint">Pixel renders living things as blocky retro sprites. Emoji uses the classic icons.</div>
+        </div>
+        <div class="set-group">
+          <div class="set-label">Forge hint lines</div>
+          <button id="hints-toggle" class="set-switch is-on" role="switch" aria-pressed="true">
+            <span class="sw-ic">💡</span>
+            <span class="sw-text">Show combine hints while dragging</span>
+            <span class="tog-state">On</span>
+          </button>
+          <div class="set-hint">Dotted guide lines point from the element you're dragging to every element it can combine with. Turn off for a cleaner board.</div>
         </div>
         <div class="set-group">
           <div class="set-label">Accent colour</div>
@@ -367,6 +382,19 @@
             <input id="import-file" type="file" accept="application/json,.json" hidden>
           </div>
           <div class="set-hint">Export saves all discoveries, achievements and runs to a file you can keep or move to another device. Import merges a saved file into your current slot.</div>
+        </div>
+      </div>
+
+      <!-- ADVANCED -->
+      <div class="set-pane" data-pane="advanced" role="tabpanel" hidden>
+        <div class="set-group">
+          <div class="set-label">Test mode</div>
+          <button id="admin-toggle" class="set-switch" role="switch" aria-pressed="false">
+            <span class="sw-ic">🔓</span>
+            <span class="sw-text">Enable all elements</span>
+            <span class="tog-state">Off</span>
+          </button>
+          <div class="set-hint">Unlocks every element, scene and lifeform at once for testing. Your real progress is kept safe and restored the moment you turn this off.</div>
         </div>
       </div>
     </div>

@@ -12,7 +12,7 @@ import { storage } from "./storage.js";
 import { slots } from "./slots.js";
 import { setupSlots as setupSlotsUI } from "./slots-ui.js";
 import { Achievements, TIER_LABEL } from "./achievements.js";
-import { setupSettings } from "./settings.js";
+import { setupSettings, hintsEnabled, adminEnabled } from "./settings.js";
 import { AudioEngine } from "./audio.js";
 import { SCENES, sceneUnlocked, missingFor } from "./scenes.js";
 import { CreatureSystem, SPECIES, PLACEABLE, habitatOf } from "./sandbox/creatures.js";
@@ -20,7 +20,8 @@ import { CreatureSystem, SPECIES, PLACEABLE, habitatOf } from "./sandbox/creatur
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 
-let DB, state, sandbox, runs, achievements, slotsUI, creatures;
+let DB, state, sandbox, runs, achievements, slotsUI, creatures, settingsAPI;
+let hintLinesOn = true;          // Forge drag hint lines (toggled in Settings)
 const GOAL_PREFIX = "\u{1F3AF} "; // target emoji prefix for scene goals
 const audio = new AudioEngine();
 let mode = "forge";              // 'forge' | 'sandbox' | 'runs' | 'catalog'
@@ -58,7 +59,15 @@ async function boot() {
   setupCatalog();
   setupTopbar();
   setupAchievementsPanel();
-  setupSettings(storage);
+  // Settings: hook the Forge-hint-line pref and the admin/test mode toggle back
+  // into the live game. Apply the persisted admin flag once on boot (it lives in
+  // settings storage, not the save file, so genuine progress stays untouched).
+  settingsAPI = setupSettings(storage, {
+    onHints: (on) => { hintLinesOn = on; if (!on) clearConnections(); },
+    onAdmin: (on) => { state.setAdminAll(on); toast(on ? "Test mode on \u2014 all elements unlocked" : "Test mode off \u2014 progress restored", on ? "\uD83D\uDD13" : "\uD83D\uDD12"); },
+  });
+  hintLinesOn = hintsEnabled(storage);
+  if (adminEnabled(storage)) state.setAdminAll(true);
   setupAudio();
   setupSlots();
   renderDrawer();
@@ -77,6 +86,8 @@ async function boot() {
       if (state.el(evt.id)?.phys) renderQuickBar();
       // a new material may unlock a scene — refresh the scene list
       renderScenes();
+      // a newly discovered creature may unlock Life tools / the Life panel
+      refreshLifeLocks();
       achievements.evaluate();
       // keep the active slot's discovered count fresh if the panel is open
       slotsUI?.render();
@@ -84,6 +95,7 @@ async function boot() {
     if (evt.type === "discover" && mode === "catalog") renderCatalog();
     if (evt.type === "reset" || evt.type === "import") {
       clearForge(); renderDrawer(); renderQuickBar(); renderScenes(); updateStats();
+      refreshLifeLocks();
       if (mode === "catalog") renderCatalog();
       achievements.evaluate();
       renderAchievementsPanel();
@@ -266,9 +278,27 @@ function makeChip(el, draggable) {
 let catActiveCat = null;   // currently selected category in the rail
 let catQuery = "";
 let catActiveId = null;    // currently inspected element (detail sheet)
+let catView = "grid";      // "grid" (Pokédex cells) or "map" (combination node-chart)
+let catMapFocus = null;    // element id the map is centered on (null = category overview)
 
 function setupCatalog() {
   $("#cat-search").addEventListener("input", e => { catQuery = e.target.value; catActiveId = null; renderCatalogDetail(); });
+  // Grid / Map view switcher
+  $$("#catalog-view .cat-vt-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const v = btn.dataset.view;
+      if (v === catView) return;
+      catView = v;
+      catMapFocus = null;
+      $$("#catalog-view .cat-vt-btn").forEach(b => {
+        const on = b.dataset.view === catView;
+        b.classList.toggle("active", on);
+        b.setAttribute("aria-selected", on ? "true" : "false");
+      });
+      audio.sfx("click");
+      renderCatalog();
+    });
+  });
 }
 
 // Phase-change hint chips for an element (freeze/melt/boil thresholds, flags).
@@ -297,7 +327,17 @@ function renderCatalog() {
     for (const [c, v] of Object.entries(cs)) if (v.found > bestN) { bestN = v.found; best = c; }
     catActiveCat = best || Object.keys(cs)[0];
   }
-  renderCatalogDetail();
+  const detail = $("#cat-detail");
+  const map = $("#cat-map");
+  if (catView === "map") {
+    detail?.classList.add("hidden");
+    map?.classList.remove("hidden");
+    renderCatalogMap();
+  } else {
+    map?.classList.add("hidden");
+    detail?.classList.remove("hidden");
+    renderCatalogDetail();
+  }
 }
 
 function renderCatalogRail() {
@@ -330,7 +370,7 @@ function renderCatalogRail() {
   }
   rail.innerHTML = html;
   $$("#cat-rail .cat-row[data-cat]").forEach(row => {
-    row.addEventListener("click", () => { catActiveCat = row.dataset.cat; renderCatalogDetail(); });
+    row.addEventListener("click", () => { catActiveCat = row.dataset.cat; catMapFocus = null; renderCatalog(); });
   });
 }
 
@@ -391,6 +431,240 @@ function renderCatalogDetail() {
   $("#cat-sheet-close")?.addEventListener("click", () => { catActiveId = null; renderCatalogDetail(); });
   // keep the open sheet in view on small screens
   if (catActiveId) $("#cat-sheet")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+/* ---------------------------------------------------------------------------
+   CATALOG — combination MAP (node-chart / mindmap)
+   Shows discovered elements of the active category as nodes, laid out left→right
+   by tier, with edges drawn for each combination recipe whose endpoints are both
+   visible. Pan by dragging the background, zoom with the wheel / pinch buttons,
+   click a node to open its data-sheet (the same one as the grid view).
+--------------------------------------------------------------------------- */
+let _mapView = { x: 0, y: 0, k: 1 };   // pan (x,y) + zoom (k)
+let _mapNodes = [];                    // [{id, el, x, y}]
+
+function renderCatalogMap() {
+  const host = $("#cat-map");
+  if (!host) return;
+  const m = catMeta(catActiveCat);
+  const stats = state.categoryStats();
+  const cs = catActiveCat === "__phys__" ? stats.phys
+    : catActiveCat === "__life__" ? stats.life
+    : (stats.byCategory[catActiveCat] || { found: 0, total: 0 });
+  const pct = cs.total ? ((cs.found / cs.total) * 100).toFixed(0) : 0;
+
+  // discovered elements in this category (respecting the search box)
+  const inCat = state.catalogCategory(catActiveCat, { query: catQuery })
+    .filter(({ found }) => found)
+    .map(({ el }) => el);
+
+  // node set: the category members plus their *discovered* direct neighbours so
+  // edges have something to connect to. Keyed by id.
+  const nodeMap = new Map();
+  const addNode = (el) => { if (el && !nodeMap.has(el.id)) nodeMap.set(el.id, el); };
+  inCat.forEach(addNode);
+  const inCatIds = new Set(inCat.map(e => e.id));
+  inCat.forEach((el) => {
+    // ingredients that produce this element
+    (state.recipesFor(el.id) || []).forEach(([a, b]) => {
+      if (state.discovered.has(a)) addNode(state.el(a));
+      if (state.discovered.has(b)) addNode(state.el(b));
+    });
+    // results this element is used to make
+    (state.usedIn(el.id) || []).forEach((u) => {
+      if (state.discovered.has(u.result)) addNode(state.el(u.result));
+    });
+  });
+
+  // build the edge list (dedup by ordered key), only between visible nodes
+  const edgeSet = new Set();
+  const edges = [];
+  nodeMap.forEach((el) => {
+    (state.recipesFor(el.id) || []).forEach(([a, b]) => {
+      [[a, el.id], [b, el.id]].forEach(([from, to]) => {
+        if (!nodeMap.has(from) || !nodeMap.has(to)) return;
+        const key = from + "\u2192" + to;
+        if (edgeSet.has(key)) return;
+        edgeSet.add(key);
+        edges.push({ from, to });
+      });
+    });
+  });
+
+  // header (with progress + a hint)
+  const headHTML = `<div class="cat-map-head">
+      <span class="cdh-title">${m.emoji} ${m.label} · map</span>
+      <span class="cdh-prog">${cs.found} / ${cs.total} · ${pct}%</span>
+      <span class="cat-map-hint">Drag to pan · scroll to zoom · click a node for details</span>
+    </div>`;
+
+  if (!nodeMap.size) {
+    host.innerHTML = headHTML +
+      `<div class="cat-map-empty">Nothing discovered in this category yet. Combine elements in the Forge, then come back to see how they connect.</div>`;
+    return;
+  }
+
+  // ---- deterministic layout: columns by tier, rows by name within a tier ----
+  const byTier = new Map();
+  nodeMap.forEach((el) => {
+    const t = el.tier || 0;
+    (byTier.get(t) || byTier.set(t, []).get(t)).push(el);
+  });
+  const tiers = [...byTier.keys()].sort((a, b) => a - b);
+  const COL = 200, ROW = 96, PAD = 70;
+  let maxRows = 0;
+  _mapNodes = [];
+  tiers.forEach((t, ci) => {
+    const col = byTier.get(t).sort((a, b) => a.name.localeCompare(b.name));
+    maxRows = Math.max(maxRows, col.length);
+    col.forEach((el, ri) => {
+      _mapNodes.push({
+        id: el.id, el,
+        x: PAD + ci * COL,
+        y: PAD + ri * ROW,
+        inCat: inCatIds.has(el.id),
+      });
+    });
+  });
+  // vertically centre each column relative to the tallest one
+  const colCount = new Map();
+  _mapNodes.forEach(n => colCount.set(n.x, (colCount.get(n.x) || 0) + 1));
+  _mapNodes.forEach(n => {
+    const total = colCount.get(n.x);
+    const offset = (maxRows - total) * ROW / 2;
+    n.y += offset;
+  });
+
+  const width = PAD * 2 + (tiers.length - 1) * COL + 80;
+  const height = PAD * 2 + (maxRows - 1) * ROW + 80;
+  const pos = id => _mapNodes.find(n => n.id === id);
+
+  // ---- SVG markup ----
+  const edgeLines = edges.map(({ from, to }) => {
+    const p = pos(from), q = pos(to);
+    if (!p || !q) return "";
+    const mx = (p.x + q.x) / 2;
+    return `<path class="cmap-edge" d="M${p.x} ${p.y} C ${mx} ${p.y}, ${mx} ${q.y}, ${q.x} ${q.y}" />`;
+  }).join("");
+
+  const nodeG = _mapNodes.map((n) => {
+    const focus = n.id === catMapFocus ? " focus" : "";
+    const dim = n.inCat ? "" : " ext";
+    const label = n.el.name.length > 14 ? n.el.name.slice(0, 13) + "…" : n.el.name;
+    return `<g class="cmap-node${focus}${dim}" data-id="${n.id}" transform="translate(${n.x},${n.y})" tabindex="0" role="button" aria-label="${n.el.name}">
+        <circle class="cmap-disc" r="26"></circle>
+        <text class="cmap-emoji" text-anchor="middle" dy="7">${n.el.emoji || "⬜"}</text>
+        <text class="cmap-label" text-anchor="middle" y="44">${label}</text>
+      </g>`;
+  }).join("");
+
+  host.innerHTML = headHTML +
+    `<div class="cat-map-stage">
+       <svg id="cmap-svg" class="cmap-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet">
+         <g id="cmap-pan">
+           <g class="cmap-edges">${edgeLines}</g>
+           <g class="cmap-nodes">${nodeG}</g>
+         </g>
+       </svg>
+       <div class="cat-map-zoom">
+         <button id="cmap-zin" title="Zoom in">＋</button>
+         <button id="cmap-zout" title="Zoom out">－</button>
+         <button id="cmap-zfit" title="Reset view">⤢</button>
+       </div>
+       <div id="cmap-sheet-host"></div>
+     </div>`;
+
+  wireCatalogMap(width, height);
+}
+
+// Wire pan / zoom / node-click interactions for the combination map.
+function wireCatalogMap(width, height) {
+  const svg = $("#cmap-svg");
+  const pan = $("#cmap-pan");
+  if (!svg || !pan) return;
+
+  // fit-to-view as the initial transform
+  const applyView = () => {
+    pan.setAttribute("transform", `translate(${_mapView.x},${_mapView.y}) scale(${_mapView.k})`);
+  };
+  const fit = () => { _mapView = { x: 0, y: 0, k: 1 }; applyView(); };
+  fit();
+
+  // wheel zoom (centred on cursor)
+  svg.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const rect = svg.getBoundingClientRect();
+    const scaleX = width / rect.width, scaleY = height / rect.height;
+    const cx = (e.clientX - rect.left) * scaleX;
+    const cy = (e.clientY - rect.top) * scaleY;
+    const old = _mapView.k;
+    const k = Math.max(0.4, Math.min(2.5, old * (e.deltaY < 0 ? 1.12 : 0.89)));
+    // keep the point under the cursor stationary
+    _mapView.x = cx - (cx - _mapView.x) * (k / old);
+    _mapView.y = cy - (cy - _mapView.y) * (k / old);
+    _mapView.k = k;
+    applyView();
+  }, { passive: false });
+
+  // drag-to-pan on the background
+  let dragging = false, sx = 0, sy = 0, ox = 0, oy = 0, moved = false;
+  svg.addEventListener("pointerdown", (e) => {
+    if (e.target.closest(".cmap-node")) return; // node handles its own click
+    dragging = true; moved = false;
+    sx = e.clientX; sy = e.clientY; ox = _mapView.x; oy = _mapView.y;
+    svg.setPointerCapture(e.pointerId);
+    svg.classList.add("grabbing");
+  });
+  svg.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    const rect = svg.getBoundingClientRect();
+    const scaleX = width / rect.width, scaleY = height / rect.height;
+    const dx = (e.clientX - sx) * scaleX, dy = (e.clientY - sy) * scaleY;
+    if (Math.abs(e.clientX - sx) + Math.abs(e.clientY - sy) > 4) moved = true;
+    _mapView.x = ox + dx; _mapView.y = oy + dy;
+    applyView();
+  });
+  const endDrag = (e) => { dragging = false; svg.classList.remove("grabbing"); try { svg.releasePointerCapture(e.pointerId); } catch {} };
+  svg.addEventListener("pointerup", endDrag);
+  svg.addEventListener("pointercancel", endDrag);
+
+  // zoom buttons
+  const zoomBy = (f) => { _mapView.k = Math.max(0.4, Math.min(2.5, _mapView.k * f)); applyView(); };
+  $("#cmap-zin")?.addEventListener("click", () => zoomBy(1.18));
+  $("#cmap-zout")?.addEventListener("click", () => zoomBy(0.85));
+  $("#cmap-zfit")?.addEventListener("click", fit);
+
+  // node click -> focus + floating detail sheet
+  $$("#cmap-svg .cmap-node").forEach((g) => {
+    const open = () => {
+      const id = g.dataset.id;
+      catMapFocus = (catMapFocus === id) ? null : id;
+      $$("#cmap-svg .cmap-node").forEach(n => n.classList.toggle("focus", n.dataset.id === catMapFocus));
+      const sheetHost = $("#cmap-sheet-host");
+      if (sheetHost) {
+        sheetHost.innerHTML = catMapFocus ? catalogSheetHTML(catMapFocus) : "";
+        $("#cat-sheet-close")?.addEventListener("click", () => {
+          catMapFocus = null; sheetHost.innerHTML = "";
+          $$("#cmap-svg .cmap-node").forEach(n => n.classList.remove("focus"));
+        });
+      }
+      audio.sfx("click");
+    };
+    g.addEventListener("click", (e) => { if (!moved) open(); });
+    g.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
+  });
+
+  // restore an open sheet after a re-render (e.g. new discovery)
+  if (catMapFocus) {
+    const sheetHost = $("#cmap-sheet-host");
+    if (sheetHost) {
+      sheetHost.innerHTML = catalogSheetHTML(catMapFocus);
+      $("#cat-sheet-close")?.addEventListener("click", () => {
+        catMapFocus = null; sheetHost.innerHTML = "";
+        $$("#cmap-svg .cmap-node").forEach(n => n.classList.remove("focus"));
+      });
+    }
+  }
 }
 
 // A property + recipe data-sheet for one discovered element.
@@ -595,6 +869,18 @@ function makeDraggable(rec) {
     if (Math.abs(e.clientX - startX) > 3 || Math.abs(e.clientY - startY) > 3) moved = true;
     node.style.left = rec.x + "px"; node.style.top = rec.y + "px";
     updateConnections(rec);
+    // Combine-on-drag: as soon as the dragged item genuinely OVERLAPS a valid
+    // partner, fire the combination immediately — no drop-off required. We end
+    // the drag first so pointerup doesn't double-fire on the now-removed node.
+    if (moved) {
+      const overlap = overlappingPartner(rec);
+      if (overlap) {
+        dragging = false; node.classList.remove("dragging");
+        try { node.releasePointerCapture(e.pointerId); } catch {}
+        clearConnections();
+        combinePair(rec, overlap);
+      }
+    }
   });
   node.addEventListener("pointerup", e => {
     if (!dragging) return;
@@ -635,6 +921,22 @@ function nearestPartner(rec, validOnly = false) {
   return best;
 }
 
+// True-overlap radius for combine-on-drag: the icons must actually touch/overlap
+// (centres within ~one item-width) before an in-flight combination fires. Looser
+// than full coincidence so it feels responsive, tighter than SNAP_RADIUS so a
+// mere fly-by doesn't trigger it.
+const OVERLAP_RADIUS = ITEM_HALF * 1.6; // ~58px
+function overlappingPartner(rec) {
+  let best = null, bestD = OVERLAP_RADIUS;
+  for (const other of boardItems) {
+    if (other.uid === rec.uid) continue;
+    if (!state.canCombine(rec.id, other.id)) continue;
+    const d = itemDistance(rec, other);
+    if (d < bestD) { bestD = d; best = other; }
+  }
+  return best;
+}
+
 /* --- animated dotted connection lines --- */
 const SVGNS = "http://www.w3.org/2000/svg";
 let linkSvg = null;
@@ -647,6 +949,9 @@ function clearConnections() {
 function updateConnections(rec) {
   if (!linkSvg) linkSvg = $("#board-links");
   linkSvg.innerHTML = "";
+  // Honour the Settings "Forge hint lines" preference: when off, we draw no
+  // guide lines and don't tag compatible/known/target classes at all.
+  if (!hintLinesOn) return;
   const A = itemCenter(rec);
   const target = nearestPartner(rec, true);
   for (const other of boardItems) {
@@ -670,6 +975,15 @@ function tryCombineAt(rec) {
   const partner = nearestPartner(rec, true) || nearestPartner(rec, false);
   $$(".bitem.target, .bitem.compatible", board).forEach(n => n.classList.remove("target", "compatible"));
   if (!partner) return;
+  combinePair(rec, partner);
+}
+
+// Resolve a combination between two specific board items. Shared by the drop
+// (pointerup) path and the new combine-on-drag (overlap) path so both feel
+// identical. A valid recipe glides the items together and spawns the result; a
+// dead pair just shakes.
+function combinePair(rec, partner) {
+  if (!rec || !partner) return;
   const cx = (rec.x + partner.x) / 2 + ITEM_HALF, cy = (rec.y + partner.y) / 2 + ITEM_HALF;
   const out = state.combine(rec.id, partner.id);
   if (out) {
@@ -1086,14 +1400,22 @@ function setupLife() {
       const b = document.createElement("button");
       b.className = "life-tool";
       b.dataset.kind = kind;
-      b.title = `Place ${spec.name} (${habitatOf(kind)})`;
       b.innerHTML = `<span class="life-emoji">${spec.emoji}</span><span class="life-label">${spec.name}</span>`;
       b.addEventListener("click", () => selectLifeTool(kind));
       palette.appendChild(b);
     });
   }
+  // reflect which species the player has actually discovered
+  refreshLifeLocks();
 
   toggle?.addEventListener("click", () => {
+    // gate: the Life feature only opens once at least one placeable
+    // creature has been discovered in the Forge (mirrors scenario gating)
+    if (!anyLifeUnlocked()) {
+      toast(`Discover a creature in the Forge first to unlock Life`, "🔒");
+      audio.sfx("click");
+      return;
+    }
     const open = panel.classList.toggle("open");
     toggle.classList.toggle("active", open);
     audio.sfx("click");
@@ -1108,9 +1430,56 @@ function setupLife() {
   renderLifePanel();
 }
 
+// True once the player has discovered at least one placeable creature, which
+// unlocks the Life feature (mirrors how scenarios unlock from discoveries).
+function anyLifeUnlocked() {
+  return PLACEABLE.some((kind) => state.isDiscovered(kind));
+}
+
+// Refresh the locked/unlocked appearance of every Life palette tool and gate the
+// Life toggle button. A species tool stays locked (silhouette) until its element
+// is discovered in the Forge; the whole panel closes if nothing is unlocked.
+function refreshLifeLocks() {
+  const palette = $("#sb-life-palette");
+  if (palette) {
+    palette.querySelectorAll(".life-tool").forEach((b) => {
+      const kind = b.dataset.kind;
+      const spec = SPECIES[kind];
+      const have = state.isDiscovered(kind);
+      b.classList.toggle("locked", !have);
+      b.title = have
+        ? `Place ${spec.name} (${habitatOf(kind)})`
+        : `Locked — discover ${spec.name} in the Forge to unlock`;
+      const label = b.querySelector(".life-label");
+      if (label) label.textContent = have ? spec.name : "???";
+    });
+  }
+  // gate the toggle button itself
+  const toggle = $("#sb-life-toggle");
+  const unlocked = anyLifeUnlocked();
+  if (toggle) {
+    toggle.classList.toggle("locked", !unlocked);
+    toggle.title = unlocked
+      ? "Place living creatures and watch their stats live"
+      : "Locked — discover a creature in the Forge to unlock Life";
+    // if nothing is unlocked, make sure the panel is closed
+    if (!unlocked) {
+      $("#sb-life")?.classList.remove("open");
+      toggle.classList.remove("active");
+    }
+  }
+}
+
 // Select a Life placement tool. Sets a synthetic "creature:<kind>" tool so the
 // canvas paint handler spawns living creatures instead of cells.
 function selectLifeTool(kind) {
+  // locked species can't be placed until discovered in the Forge
+  if (!state.isDiscovered(kind)) {
+    const spec = SPECIES[kind];
+    toast(`Discover ${spec ? spec.name : kind} in the Forge first`, "🔒");
+    audio.sfx("click");
+    return;
+  }
   if (mode !== "sandbox") switchMode("sandbox");
   sandbox.currentTool = "creature:" + kind;
   // de-highlight material quick-bar; highlight the chosen life tool
