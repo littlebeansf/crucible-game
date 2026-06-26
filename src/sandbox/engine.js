@@ -224,12 +224,18 @@ export class Sandbox {
           if (id === "eraser") this.clearCell(x, y); else this.set(x, y, id);
           continue;
         }
-        // Solid-on-solid never replaces — solids stack/fill empty space only,
-        // so you can build up structures without erasing what's already there.
-        if (this.state(id) === "solid" && this.state(occupant) === "solid") continue;
-        // Otherwise (liquids/powders, or solids dropped over liquid/gas) overpaint,
-        // but a gas spray still won't bury heavier matter.
-        if (this.state(id) !== "gas") this.set(x, y, id);
+        // Painting never destroys a solid/powder structure that's already there:
+        // you can only overpaint empty space or DISPLACEABLE matter (a lighter
+        // liquid/gas the new material would sink through anyway). This lets you
+        // build up structures and pour liquids over them without erasing blocks.
+        const occState = this.state(occupant);
+        const occSettled = occState === "solid" || occState === "powder";
+        if (occSettled) continue;
+        // occupant is a liquid/gas/energy: only replace if the new material is
+        // heavier than what's there (so a gas spray won't bury heavier matter,
+        // and pouring water into oil/air works as expected).
+        if (this.state(id) === "gas") continue;
+        if (this.density(id) >= this.density(occupant)) this.set(x, y, id);
       }
   }
 
