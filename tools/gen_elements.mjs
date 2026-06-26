@@ -848,6 +848,9 @@ R("coca_cola","tattoo","lady_l", { name:"Lady L", emoji:"👑", icon:"lady_l", t
   tags:["legend","meme","icon"], phys:null,
   info:"Lady L: a legendary icon born of Coca Cola and ink. The crown jewel of CRUCIBLE's secret recipes." });
 
+// *** EASTER EGG: Lady L + Heart -> Magic (a secret alternate path to Magic) ***
+R("lady_l","heart","magic",null);
+
 // A spread of fun memes (each defined once, reachable from real elements)
 meme("dragon", { name:"Dragon", emoji:"🐉", icon:"dragon", tier:8, tags:["mythology","fire"], info:"Dragon: a mythical fire-breathing reptile." });
 R("lizard_seed","fire","dragon",null);
