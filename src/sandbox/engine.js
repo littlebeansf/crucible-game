@@ -927,6 +927,48 @@ export class Sandbox {
     }
   }
 
+  // Spawn a small, cheap burst of particles that VISUALLY signals a phase change
+  // at grid cell (cx,cy). This is what lets a player SEE a material boiling,
+  // freezing or melting — essential for building steam engines / fridges and
+  // reading what their machine is doing. `kind` is the transition class:
+  //   "boil"     → rising vapour puff + a couple of bubbles (water→steam, etc.)
+  //   "condense" → tiny falling droplet shimmer (steam→water)
+  //   "freeze"   → pale-blue frost sparkles that settle (water→ice)
+  //   "melt"     → soft warm glow drip (ice→water, iron→molten)
+  // Colour is taken from the SOURCE material so cola steam reads brown-ish, etc.
+  // Throttled hard (random gate + global cap) so a boiling pool stays performant.
+  spawnPhaseFX(cx, cy, kind, color) {
+    const fx = this.fx;
+    if (fx.length > this.maxFx) return;
+    const cell = this.cell;
+    const rnd = (a, b) => a + Math.random() * (b - a);
+    const col = color || "#dfe7ef";
+    if (kind === "boil") {
+      // one rising vapour puff
+      fx.push({ kind: "vapor", x: cx + rnd(-0.2, 0.2), y: cy - 0.1,
+        vx: rnd(-0.05, 0.05), vy: -rnd(0.10, 0.22), r: rnd(0.5, 1.0) * cell,
+        life: rnd(26, 46) | 0, max: 46, col });
+      // an occasional bubble that pops upward
+      if (Math.random() < 0.5)
+        fx.push({ kind: "bubble", x: cx + rnd(-0.3, 0.3), y: cy + rnd(-0.1, 0.2),
+          vx: rnd(-0.03, 0.03), vy: -rnd(0.06, 0.16), r: rnd(0.8, 1.8),
+          life: rnd(14, 26) | 0, max: 26, col });
+    } else if (kind === "condense") {
+      fx.push({ kind: "drip", x: cx + rnd(-0.2, 0.2), y: cy,
+        vx: rnd(-0.02, 0.02), vy: rnd(0.04, 0.12), r: rnd(0.6, 1.2),
+        life: rnd(16, 28) | 0, max: 28, col });
+    } else if (kind === "freeze") {
+      for (let i = 0; i < 2; i++)
+        fx.push({ kind: "frost", x: cx + rnd(-0.4, 0.4), y: cy + rnd(-0.4, 0.4),
+          vx: rnd(-0.02, 0.02), vy: rnd(-0.01, 0.04), r: rnd(0.6, 1.3),
+          life: rnd(20, 38) | 0, max: 38, col });
+    } else if (kind === "melt") {
+      fx.push({ kind: "glow", x: cx + rnd(-0.2, 0.2), y: cy + rnd(-0.1, 0.2),
+        vx: rnd(-0.03, 0.03), vy: rnd(0.0, 0.08), r: rnd(0.6, 1.3) * cell,
+        life: rnd(16, 30) | 0, max: 30, col });
+    }
+  }
+
   // Advance all FX particles one frame (called from step()). Applies velocity,
   // gravity/drag per kind, grows/shrinks, and culls dead ones.
   // ====================================================================
@@ -1169,6 +1211,12 @@ export class Sandbox {
       else if (p.kind === "fireball") { p.vx *= 0.9; p.vy *= 0.9; p.r *= 1.015; }
       else if (p.kind === "smoke") { p.vx *= 0.97; p.vy *= 0.98; p.r *= 1.02; }
       else if (p.kind === "shock") { p.r += p.grow * 0.16; }
+      // phase-change particles
+      else if (p.kind === "vapor") { p.vx *= 0.98; p.vy *= 0.99; p.r *= 1.018; }   // rise + billow
+      else if (p.kind === "bubble") { p.vy *= 0.96; }                              // bubble drifts up
+      else if (p.kind === "drip") { p.vy += 0.02; }                                // droplet falls
+      else if (p.kind === "frost") { p.vy += 0.005; p.vx *= 0.96; }                // sparkle settles
+      else if (p.kind === "glow") { p.vx *= 0.97; p.vy *= 0.98; p.r *= 1.01; }     // heat shimmer
       fx[w++] = p;
     }
     fx.length = w;
@@ -1219,24 +1267,77 @@ export class Sandbox {
         ctx.strokeStyle = `rgba(255,255,235,${a})`;
         ctx.lineWidth = p.r;
         ctx.beginPath(); ctx.moveTo(lx, ly); ctx.lineTo(px, py); ctx.stroke();
+      } else if (p.kind === "glow") {
+        // melt shimmer: soft warm glow from the source colour
+        const a = t * 0.5;
+        const [r, g, b] = this._rgb(p.col);
+        const grd = ctx.createRadialGradient(px, py, 0, px, py, p.r);
+        grd.addColorStop(0, `rgba(${r},${g},${b},${a})`);
+        grd.addColorStop(1, `rgba(${r},${g},${b},0)`);
+        ctx.fillStyle = grd;
+        ctx.beginPath(); ctx.arc(px, py, p.r, 0, Math.PI * 2); ctx.fill();
       }
     }
-    // normal pass: smoke (dark, semi-transparent, no glow)
+    // normal pass: smoke + phase puffs (semi-transparent, no glow)
     ctx.globalCompositeOperation = "source-over";
     for (let i = 0; i < fx.length; i++) {
       const p = fx[i];
-      if (p.kind !== "smoke") continue;
       const t = p.life / p.max;
-      const a = Math.min(0.35, t * 0.4);
       const px = p.x * cell + cell / 2, py = p.y * cell + cell / 2;
-      const s = p.shade;
-      const g = ctx.createRadialGradient(px, py, 0, px, py, p.r);
-      g.addColorStop(0, `rgba(${s},${s},${s},${a})`);
-      g.addColorStop(1, `rgba(${s},${s},${s},0)`);
-      ctx.fillStyle = g;
-      ctx.beginPath(); ctx.arc(px, py, p.r, 0, Math.PI * 2); ctx.fill();
+      if (p.kind === "smoke") {
+        const a = Math.min(0.35, t * 0.4);
+        const s = p.shade;
+        const g = ctx.createRadialGradient(px, py, 0, px, py, p.r);
+        g.addColorStop(0, `rgba(${s},${s},${s},${a})`);
+        g.addColorStop(1, `rgba(${s},${s},${s},0)`);
+        ctx.fillStyle = g;
+        ctx.beginPath(); ctx.arc(px, py, p.r, 0, Math.PI * 2); ctx.fill();
+      } else if (p.kind === "vapor") {
+        // soft rising puff tinted toward the source material, fading white
+        const a = Math.min(0.4, t * 0.5);
+        const [r, g, b] = this._rgb(p.col);
+        // lighten the source colour so steam reads as a pale puff, not solid paint
+        const lr = (r + 255 * 2) / 3 | 0, lg = (g + 255 * 2) / 3 | 0, lb = (b + 255 * 2) / 3 | 0;
+        const grd = ctx.createRadialGradient(px, py, 0, px, py, p.r);
+        grd.addColorStop(0, `rgba(${lr},${lg},${lb},${a})`);
+        grd.addColorStop(1, `rgba(${lr},${lg},${lb},0)`);
+        ctx.fillStyle = grd;
+        ctx.beginPath(); ctx.arc(px, py, p.r, 0, Math.PI * 2); ctx.fill();
+      } else if (p.kind === "bubble") {
+        // small ring outline = a boiling bubble
+        const a = Math.min(0.7, t * 0.9);
+        ctx.strokeStyle = `rgba(255,255,255,${a})`;
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.arc(px, py, p.r, 0, Math.PI * 2); ctx.stroke();
+      } else if (p.kind === "drip") {
+        // tiny falling droplet (condensation)
+        const a = Math.min(0.7, t * 0.9);
+        const [r, g, b] = this._rgb(p.col);
+        ctx.fillStyle = `rgba(${r},${g},${b},${a})`;
+        ctx.beginPath(); ctx.arc(px, py, p.r, 0, Math.PI * 2); ctx.fill();
+      } else if (p.kind === "frost") {
+        // pale-blue crystalline sparkle (freezing)
+        const a = Math.min(0.85, t);
+        ctx.fillStyle = `rgba(214,238,255,${a})`;
+        ctx.beginPath(); ctx.arc(px, py, p.r * (0.5 + 0.6 * t), 0, Math.PI * 2); ctx.fill();
+      }
     }
     ctx.restore();
+  }
+
+  // Parse a #rrggbb (or #rgb) hex colour to an [r,g,b] array. Cached per string
+  // so the per-particle render loop stays cheap. Falls back to a pale grey.
+  _rgb(hex) {
+    if (!hex) return [223, 231, 239];
+    this._rgbCache = this._rgbCache || new Map();
+    let v = this._rgbCache.get(hex);
+    if (v) return v;
+    let h = hex.replace("#", "");
+    if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+    const n = parseInt(h, 16);
+    v = Number.isNaN(n) ? [223, 231, 239] : [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+    this._rgbCache.set(hex, v);
+    return v;
   }
 
   maybeFall(x, y, id, p) {
@@ -1340,22 +1441,28 @@ export class Sandbox {
       if (p.evapResidue && this.has(p.evapResidue) && Math.random() < 0.5) {
         this._dropResidue(x, y, p.evapResidue);
       }
+      // visual: rising vapour puff + bubbles so the boil is readable
+      if (Math.random() < 0.35) this.spawnPhaseFX(x, y, "boil", p.color);
       this.set(x, y, p.boilTo); this.produced(p.boilTo); return true;
     }
     if (p.freezeTo && t <= freezeAt && this.has(p.freezeTo)) {
       this.logEvent("phase", `${this.nameOf(id)} froze into ${this.nameOf(p.freezeTo)} at ${Math.round(freezeAt)}°C`, "freeze|"+id);
+      if (Math.random() < 0.3) this.spawnPhaseFX(x, y, "freeze", p.color);  // frost sparkle
       this.set(x, y, p.freezeTo); this.produced(p.freezeTo); return true;
     }
     if (p.meltTo && t >= meltAt && this.has(p.meltTo)) {
       this.logEvent("phase", `${this.nameOf(id)} melted into ${this.nameOf(p.meltTo)} at ${Math.round(meltAt)}°C`, "melt|"+id);
+      if (Math.random() < 0.3) this.spawnPhaseFX(x, y, "melt", p.color);   // warm glow drip
       this.set(x, y, p.meltTo); this.produced(p.meltTo); return true;
     }
     if (p.condenseTo && t <= condenseAt && p.state === "gas" && Math.random() < 0.02 && this.has(p.condenseTo)) {
       this.logEvent("phase", `${this.nameOf(id)} condensed into ${this.nameOf(p.condenseTo)}`, "condense|"+id);
+      this.spawnPhaseFX(x, y, "condense", this.phys(p.condenseTo)?.color || p.color);  // droplet shimmer
       this.set(x, y, p.condenseTo); this.produced(p.condenseTo); return true;
     }
     if (p.coolTo && t <= 600 && this.has(p.coolTo)) {
       this.logEvent("phase", `${this.nameOf(id)} cooled into ${this.nameOf(p.coolTo)}`, "cool|"+id);
+      if (Math.random() < 0.25) this.spawnPhaseFX(x, y, "freeze", p.color);  // solidifying
       this.set(x, y, p.coolTo); this.produced(p.coolTo); return true;
     }
 
