@@ -195,7 +195,13 @@ export class Achievements {
   }
 
   // Evaluate all not-yet-unlocked achievements; fire callbacks for new ones.
+  // While admin/test mode ("all elements") is active the in-memory discovered
+  // set is artificially full, so every progress-based achievement would falsely
+  // unlock. Achievements are therefore frozen for the duration of test mode —
+  // nothing new is earned until it's switched back off and genuine progress
+  // resumes. Already-unlocked achievements are untouched.
   evaluate() {
+    if (this.state.isAdminAll && this.state.isAdminAll()) return [];
     const c = this.ctx();
     const newly = [];
     for (const a of ACHIEVEMENTS) {
